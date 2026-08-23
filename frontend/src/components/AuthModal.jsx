@@ -14,10 +14,10 @@ const roles = [
 ]
 
 const demoCredentials = [
-  { role: "student", label: "Student", email: "aanya.sharma@college.edu" },
-  { role: "teacher", label: "Teacher", email: "r.mehta@college.edu" },
-  { role: "hod", label: "HOD", email: "hod.cse@college.edu" },
-  { role: "admin", label: "Admin", email: "admin@college.edu" },
+  { role: "teacher", label: "Priya Sharma (Teacher)", email: "priya.sharma@antiproxy.dev", password: "Teacher@123" },
+  { role: "student", label: "Student A01 (CSE-A)", email: "student.a01@antiproxy.dev", password: "Student@123" },
+  { role: "student", label: "Student B01 (CSE-B)", email: "student.b01@antiproxy.dev", password: "Student@123" },
+  { role: "hod", label: "Dr. Neha Kapoor (HOD)", email: "neha.kapoor@antiproxy.dev", password: "Hod@123" },
 ]
 
 export default function AuthModal({ open, onClose, initialMode = "login" }) {
@@ -38,9 +38,9 @@ export default function AuthModal({ open, onClose, initialMode = "login" }) {
 
   const autofillDemo = (demo) => {
     setEmail(demo.email)
-    setPassword("demo")
+    setPassword(demo.password || "Teacher@123")
     setRole(demo.role)
-    toast.success(`Autofilled demo account for ${demo.label}`)
+    toast.success(`Autofilled account for ${demo.label}`)
   }
 
   const submit = async (event) => {
@@ -124,11 +124,12 @@ export default function AuthModal({ open, onClose, initialMode = "login" }) {
         <label className="block">
           <span className="mb-1.5 block text-sm font-medium text-navy">College email</span>
           <input
-            type="email"
+            type="text"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="name@college.edu"
+            onChange={(e) => setEmail(e.target.value.trim())}
+            placeholder="priya.sharma@antiproxy.dev"
             required
+            autoComplete="username"
             className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-navy outline-none transition focus:border-teal"
           />
         </label>
@@ -204,11 +205,11 @@ export default function AuthModal({ open, onClose, initialMode = "login" }) {
 
         {mode === "login" && (
           <div className="mt-4 pt-4 border-t border-border space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted">Quick Demo Database Accounts (Password: <code className="font-mono text-navy">demo</code>)</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted">Quick Development Database Accounts (Click to Autofill)</p>
             <div className="grid grid-cols-2 gap-2">
               {demoCredentials.map((demo) => (
                 <button
-                  key={demo.role}
+                  key={demo.email}
                   type="button"
                   onClick={() => autofillDemo(demo)}
                   className="rounded-lg border border-border bg-slate-50 p-2 text-left hover:border-teal hover:bg-teal/5 transition-colors"

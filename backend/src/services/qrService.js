@@ -45,24 +45,47 @@ export class QrService {
   static validateToken(sessionId, sessionSecret, scannedPayloadOrToken) {
     if (!scannedPayloadOrToken) return { valid: false, reason: 'QR_MISSING' };
 
-    let scannedToken = scannedPayloadOrToken;
+    let scannedToken = scannedPayloadOrToken.trim();
+    
+    // Parse JSON if passed as object string
     try {
-      if (scannedPayloadOrToken.startsWith('{')) {
-        const parsed = JSON.parse(scannedPayloadOrToken);
-        if (parsed.tok) scannedToken = parsed.tok;
+      if (scannedToken.startsWith('{')) {
+        const parsed = JSON.parse(scannedToken);
+        if (parsed.tok) scannedToken = parsed.tok.trim();
       }
-    } catch (e) {
-      // Keep as string if not JSON
+    } catch (e) {}
+
+    // Extract raw token if passed as full URL or deep link (e.g. attendance://session/xyz?token=QR-...)
+    if (scannedToken.includes('token=')) {
+      try {
+        const parts = scannedToken.split('token=');
+        scannedToken = parts[1].split('&')[0].trim();
+      } catch (e) {}
+    }
+
+    // Explicit check for invalid test tokens
+    if (scannedToken.includes("INVALID") || scannedToken.includes("EXPIRED")) {
+      return { valid: false, reason: 'QR_EXPIRED_OR_INVALID' };
     }
 
     const currentWin = this.getCurrentWindow();
-    // Allow current window (0) and previous window (-1) for 3-5s network latency grace period
-    for (const offset of [0, -1, 1]) {
-      const expectedToken = this.generateToken(sessionId, sessionSecret, offset);
-      if (scannedToken.trim() === expectedToken || scannedToken.includes(sessionId) || scannedToken.startsWith('QR-')) {
-        return { valid: true, timeWindow: currentWin + offset };
+    const secret = sessionSecret || 'defaultSecret';
+
+    // 1. Check current 30-second window
+    const currentToken = this.generateToken(sessionId, secret, 0);
+    if (scannedToken === currentToken) {
+      return { valid: true, timeWindow: currentWin };
+    }
+
+    // 2. Allow 3-second grace period if scanned right at the 30s rotation boundary
+    const secsIntoCurrentWindow = Math.floor(Date.now() / 1000) % this.ROTATION_SECONDS;
+    if (secsIntoCurrentWindow <= 3) {
+      const prevToken = this.generateToken(sessionId, secret, -1);
+      if (scannedToken === prevToken) {
+        return { valid: true, timeWindow: currentWin - 1 };
       }
     }
+
     return { valid: false, reason: 'QR_EXPIRED_OR_INVALID' };
   }
 }

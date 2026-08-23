@@ -11,11 +11,12 @@ import analyticsRoutes from './routes/analytics.js';
 import riskRoutes from './routes/risk.js';
 import ruleRoutes from './routes/rules.js';
 import notificationRoutes from './routes/notifications.js';
+import timetablesRoutes from './routes/timetables.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 4001;
 
 // Express Middleware
 app.use(cors({ origin: true, credentials: true }));
@@ -36,6 +37,7 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/risk', riskRoutes);
 app.use('/api/rules', ruleRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/timetables', timetablesRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -57,10 +59,19 @@ async function startServer() {
   await initDb();
   await seedDatabase();
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`====================================================`);
     console.log(`🚀 AntiProxy Express Backend listening on http://localhost:${PORT}`);
     console.log(`====================================================`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use by another node process.`);
+      console.error(`   Run 'taskkill /F /PID <pid>' to free port ${PORT}.`);
+    } else {
+      console.error('Server error:', err);
+    }
   });
 }
 

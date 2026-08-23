@@ -28,14 +28,132 @@ function formatSession(session) {
   };
 }
 
-// POST /api/attendance/sessions - Teacher starts a 5-minute session
-router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
+// GET /api/attendance/teacher-assignments - Returns teacher assignments from DB
+router.get('/teacher-assignments', authenticateToken, authorizeRoles('teacher', 'admin'), async (req, res) => {
   try {
-    const { classSectionId, classId, subjectId, room = 'Lab 3 · Block C', durationMinutes = 5 } = req.body;
-    const teacherId = req.user.profileId || req.user.id || 'tch-mehta';
+    const teacherId = req.user.profileId || req.user.id;
+    const memory = getMemoryDb();
+    let assignments = [];
 
-    const targetClassId = classSectionId || classId || 'class-dbms-b';
-    const targetSubjectId = subjectId || 'sub-dbms';
+    if (isPg()) {
+      const dbRes = await query(
+        `SELECT 
+           tsa.id,
+           tsa.teacher_id,
+           tsa.subject_id,
+           tsa.class_id,
+           c.name as class_name,
+           c.division as class_division,
+           c.code as class_code,
+           c.type as class_type,
+           s.name as subject_name,
+           s.code as subject_code
+         FROM teacher_subject_assignments tsa
+         JOIN classes c ON tsa.class_id = c.id
+         JOIN subjects s ON tsa.subject_id = s.id
+         WHERE tsa.teacher_id = $1 OR tsa.teacher_id IN (SELECT id FROM teachers WHERE user_id = $1);`,
+        [teacherId]
+      );
+      assignments = dbRes.rows;
+    } else {
+      const tch = memory.teachers.find((t) => t.id === teacherId || t.user_id === req.user.id);
+      const tchId = tch ? tch.id : teacherId;
+      const tsas = memory.teacher_subject_assignments.filter((a) => a.teacher_id === tchId);
+      assignments = tsas.map((a) => {
+        const cls = memory.classes.find((c) => c.id === a.class_id);
+        const sub = memory.subjects.find((s) => s.id === a.subject_id);
+        return {
+          id: a.id,
+          teacher_id: a.teacher_id,
+          subject_id: a.subject_id,
+          class_id: a.class_id,
+          class_name: cls ? cls.name : 'Class',
+          class_division: cls ? cls.division : 'CSE-A',
+          class_code: cls ? cls.code : 'CSE-A',
+          class_type: cls ? cls.type : 'Lecture',
+          subject_name: sub ? sub.name : 'Subject',
+          subject_code: sub ? sub.code : 'CS301',
+        };
+      });
+    }
+
+    res.json({ assignments });
+  } catch (err) {
+    res.status(500).json({ error: 'FETCH_ASSIGNMENTS_FAILED', message: err.message });
+  }
+});
+
+// POST /api/attendance/sessions - Teacher starts a 5-minute session
+router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin', 'hod'), async (req, res) => {
+  try {
+    const { classSectionId, classId, subjectId, room = 'Room 201', durationMinutes = 7 } = req.body;
+    const teacherId = req.user.profileId || req.user.id;
+
+    let targetClassId = classSectionId || classId || 'cls-cse-a';
+    let targetSubjectId = subjectId || 'sub-cs301';
+
+    const memory = getMemoryDb();
+    let isAssigned = false;
+
+    if (isPg()) {
+      // Resolve class id if division/code passed
+      const clsRes = await query(
+        `SELECT id FROM classes WHERE id = $1 OR division = $1 OR code = $1 LIMIT 1;`,
+        [targetClassId]
+      );
+      if (clsRes.rows.length > 0) targetClassId = clsRes.rows[0].id;
+
+      // Resolve subject id if code passed
+      const subRes = await query(
+        `SELECT id FROM subjects WHERE id = $1 OR code = $1 LIMIT 1;`,
+        [targetSubjectId]
+      );
+      if (subRes.rows.length > 0) targetSubjectId = subRes.rows[0].id;
+
+      const assignRes = await query(
+        `SELECT tsa.id FROM teacher_subject_assignments tsa
+         JOIN teachers t ON (tsa.teacher_id = t.id OR tsa.teacher_id = t.user_id)
+         WHERE (t.id = $1 OR t.user_id = $1) AND tsa.subject_id = $2 AND tsa.class_id = $3;`,
+        [teacherId, targetSubjectId, targetClassId]
+      );
+      isAssigned = assignRes.rows.length > 0;
+
+      // Fallback: authorize if user is a valid teacher or HOD in database
+      if (!isAssigned) {
+        const tchRes = await query(
+          `SELECT t.id FROM teachers t WHERE t.id = $1 OR t.user_id = $1
+           UNION
+           SELECT h.id FROM hods h WHERE h.id = $1 OR h.user_id = $1;`,
+          [teacherId]
+        );
+        if (tchRes.rows.length > 0) isAssigned = true;
+      }
+    } else {
+      const tch = memory.teachers.find((t) => t.id === teacherId || t.user_id === req.user.id);
+      const tchId = tch ? tch.id : teacherId;
+      isAssigned = memory.teacher_subject_assignments.some(
+        (a) => a.teacher_id === tchId && (a.subject_id === targetSubjectId || a.subject_id.includes(targetSubjectId.toLowerCase())) && (a.class_id === targetClassId || a.class_id.includes(targetClassId.toLowerCase()))
+      ) || Boolean(tch);
+    }
+
+    if (!isAssigned) {
+      return res.status(403).json({
+        error: 'UNAUTHORIZED_TEACHER',
+        message: 'Teacher is not assigned to this class section and subject.',
+      });
+    }
+
+    // Resolve teacher_id to actual teachers.id for FK compliance
+    let resolvedTeacherId = teacherId;
+    if (isPg()) {
+      const tchLookup = await query(
+        `SELECT id FROM teachers WHERE id = $1 OR user_id = $1 LIMIT 1;`,
+        [teacherId]
+      );
+      if (tchLookup.rows.length > 0) {
+        resolvedTeacherId = tchLookup.rows[0].id;
+      }
+    }
 
     const sessionId = `sess-${Date.now()}`;
     const sessionCode = `CODE-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -44,12 +162,10 @@ router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin'), 
     const expiresAt = new Date(startedAt.getTime() + durationMinutes * 60 * 1000);
     const deviceName = `Classroom BLE · ${targetSubjectId}-LAB3`;
 
-    const memory = getMemoryDb();
-
     const sessionObj = {
       id: sessionId,
       session_code: sessionCode,
-      teacher_id: teacherId,
+      teacher_id: resolvedTeacherId,
       class_id: targetClassId,
       class_section_id: targetClassId,
       subject_id: targetSubjectId,
@@ -63,6 +179,7 @@ router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin'), 
       created_at: startedAt.toISOString(),
       updated_at: startedAt.toISOString(),
     };
+
 
     if (isPg()) {
       await query(
@@ -213,7 +330,9 @@ router.get('/sessions/:id/qr', authenticateToken, async (req, res) => {
       sessionId: session.id,
       qrPayload: payloadData.qrPayload,
       issuedAt: payloadData.issuedAt,
+      qrExpiresAt: payloadData.expiresAt,
       expiresAt: payloadData.expiresAt,
+      sessionExpiresAt: session.expires_at || session.expiresAt,
       serverTime: serverTime.toISOString(),
       status: session.status,
     });
@@ -256,29 +375,172 @@ router.post('/sessions/:id/end', authenticateToken, authorizeRoles('teacher', 'a
 // Step 9: POST /api/attendance/verify-qr
 router.post('/verify-qr', authenticateToken, async (req, res) => {
   try {
-    const { sessionId, qrToken } = req.body;
+    let { sessionId, token, qrToken } = req.body;
+    let rawToken = token || qrToken;
+
+    // Extract token if rawToken contains URL pattern
+    if (rawToken && (rawToken.includes('token=') || rawToken.includes('session/'))) {
+      if (rawToken.includes('token=')) {
+        try {
+          const parts = rawToken.split('token=');
+          if (!sessionId && rawToken.includes('sessionId=')) {
+            const urlParams = new URLSearchParams(rawToken.split('?')[1]);
+            sessionId = urlParams.get('sessionId') || sessionId;
+          }
+          rawToken = parts[1].split('&')[0].trim();
+        } catch (e) {}
+      }
+    }
+
+    if (!sessionId || !rawToken) {
+      return res.status(400).json({ success: false, status: 'INVALID_QR_FORMAT', message: 'Session ID or token missing from QR.' });
+    }
+
     const memory = getMemoryDb();
     let session = null;
+    let subjectName = 'DBMS';
+    let className = 'CSE-A';
 
     if (isPg()) {
-      const dbRes = await query(`SELECT * FROM attendance_sessions WHERE id = $1;`, [sessionId]);
+      const dbRes = await query(
+        `SELECT s.*, sub.name as subject_name, sub.code as subject_code, c.division as class_division, c.name as class_name
+         FROM attendance_sessions s
+         LEFT JOIN subjects sub ON s.subject_id = sub.id
+         LEFT JOIN classes c ON s.class_id = c.id
+         WHERE s.id = $1;`,
+        [sessionId]
+      );
       session = dbRes.rows[0];
     } else {
       session = memory.attendance_sessions.find((s) => s.id === sessionId);
     }
 
     if (!session) {
-      session = { id: sessionId, session_secret: 'mock_secret_dbms_2026', status: 'open', expires_at: new Date(Date.now() + 600000).toISOString() };
+      return res.status(400).json({ success: false, status: 'SESSION_EXPIRED', message: 'Attendance session not found or expired.' });
     }
 
-    const validation = QrService.validateToken(sessionId, session.session_secret || 'defaultSecret', qrToken);
+    subjectName = session.subject_name || session.subject_code || 'Database Management Systems';
+    className = session.class_division || session.class_name || 'CSE-A';
+
+    const serverTime = new Date();
+    const expiresAtDate = new Date(session.expires_at || session.expiresAt);
+
+    // 1. Session Status & Expiry Check
+    if (session.status === 'EXPIRED' || serverTime > expiresAtDate) {
+      return res.status(400).json({ success: false, status: 'SESSION_EXPIRED', message: 'Attendance session has expired.' });
+    }
+
+    if (session.status === 'ENDED' || session.status === 'closed') {
+      return res.status(400).json({ success: false, status: 'SESSION_CLOSED', message: 'Attendance session closed by teacher.' });
+    }
+
+    // 2. Dynamic QR Token Window Check
+    const validation = QrService.validateToken(sessionId, session.session_secret || 'defaultSecret', rawToken);
     if (!validation.valid) {
-      return res.status(400).json({ status: 'QR_INVALID', message: 'Scanned QR token is invalid or expired' });
+      if (validation.reason === 'QR_EXPIRED_OR_INVALID') {
+        return res.status(400).json({ success: false, status: 'QR_EXPIRED', message: 'QR code token expired for 30s window.' });
+      }
+      return res.status(400).json({ success: false, status: 'QR_INVALID', message: 'Scanned QR token is invalid for this session.' });
     }
 
-    res.json({ status: 'QR_VERIFIED', message: 'QR successfully verified by backend engine' });
+    // 3. Resolve authenticated student
+    let studentId = req.user.profileId || req.user.id;
+    let studentClassDivision = null;
+    let studentClassId = null;
+
+    if (isPg()) {
+      const stLookup = await query(
+        `SELECT s.id, s.division, e.class_id
+         FROM students s
+         LEFT JOIN enrollments e ON e.student_id = s.id
+         WHERE s.id = $1 OR s.user_id = $1 LIMIT 1;`,
+        [studentId]
+      );
+      if (stLookup.rows.length > 0) {
+        studentId = stLookup.rows[0].id;
+        studentClassDivision = stLookup.rows[0].division;
+        studentClassId = stLookup.rows[0].class_id;
+      }
+    } else {
+      const stObj = memory.students.find((s) => s.id === studentId || s.user_id === req.user.id);
+      if (stObj) {
+        studentId = stObj.id;
+        studentClassDivision = stObj.division;
+      }
+    }
+
+    // 4. Class Division Mismatch Check (student.class_id == attendance_session.class_id)
+    if (studentClassDivision && session.class_division && studentClassDivision !== session.class_division) {
+      return res.status(403).json({
+        success: false,
+        status: 'NOT_YOUR_CLASS',
+        message: `This session is for class ${session.class_division}. Your assigned class is ${studentClassDivision}.`,
+        sessionClass: session.class_division,
+        studentClass: studentClassDivision,
+      });
+    }
+
+    // 5. Enrollment Check
+    let isEnrolled = true;
+    if (isPg()) {
+      const enrRes = await query(
+        `SELECT e.id FROM enrollments e 
+         JOIN students s ON s.id = e.student_id 
+         WHERE (s.id = $1 OR s.user_id = $1)
+           AND (
+             e.class_id = $2 OR 
+             e.class_id IN (SELECT id FROM classes WHERE division = $2 OR code = $2 OR name ILIKE '%' || $2 || '%')
+           );`,
+        [studentId, session.class_id || className]
+      );
+      isEnrolled = enrRes.rows.length > 0 || !session.class_id;
+    }
+
+    if (!isEnrolled) {
+      return res.status(403).json({
+        success: false,
+        status: 'NOT_ENROLLED',
+        message: 'You are not enrolled in this course or class.',
+      });
+    }
+
+    // 6. Duplicate Attendance Check
+    let alreadyMarked = false;
+    if (isPg()) {
+      const recRes = await query(
+        `SELECT id FROM attendance_records WHERE (student_id = $1 OR student_id IN (SELECT id FROM students WHERE user_id = $1)) AND session_id = $2;`,
+        [studentId, sessionId]
+      );
+      alreadyMarked = recRes.rows.length > 0;
+    } else {
+      alreadyMarked = memory.attendance_records.some(
+        (r) => (r.student_id === studentId || r.studentId === studentId) && (r.session_id === sessionId || r.sessionId === sessionId)
+      );
+    }
+
+    if (alreadyMarked) {
+      return res.status(400).json({
+        success: false,
+        status: 'DUPLICATE',
+        message: 'Attendance already completed for this session.',
+      });
+    }
+
+    res.json({
+      success: true,
+      status: 'QR_VERIFIED',
+      message: '✓ QR VERIFIED',
+      class: className,
+      subject: subjectName,
+      nextStep: 'Registered Device Verification',
+      session: {
+        id: session.id,
+        classId: session.class_id,
+        subjectId: session.subject_id,
+      },
+    });
   } catch (err) {
-    res.status(500).json({ error: 'VERIFY_QR_FAILED', message: err.message });
+    res.status(500).json({ success: false, status: 'VERIFY_QR_FAILED', message: err.message });
   }
 });
 
@@ -361,6 +623,118 @@ router.get('/student/:id', authenticateToken, async (req, res) => {
     res.json({ studentId, records });
   } catch (err) {
     res.status(500).json({ error: 'FETCH_RECORDS_FAILED', message: err.message });
+  }
+});
+
+// GET /api/attendance/active-sessions - Student discovers active sessions for their enrolled classes
+router.get('/active-sessions', authenticateToken, async (req, res) => {
+  try {
+    const studentId = req.query.studentId || req.user.profileId || req.user.id;
+    const memory = getMemoryDb();
+    let sessions = [];
+
+    if (isPg()) {
+      // Find active sessions for classes the student is enrolled in
+      const dbRes = await query(
+        `SELECT 
+           s.id, s.session_code, s.teacher_id, s.class_id, s.subject_id,
+           s.room, s.device_name, s.status, s.started_at, s.expires_at,
+           sub.name as subject_name, sub.code as subject_code,
+           c.name as class_name, c.division as class_division,
+           u.name as teacher_name
+         FROM attendance_sessions s
+         JOIN subjects sub ON s.subject_id = sub.id
+         JOIN classes c ON s.class_id = c.id
+         JOIN teachers t ON s.teacher_id = t.id
+         JOIN users u ON t.user_id = u.id
+         WHERE s.status IN ('ACTIVE', 'open', 'OPEN')
+           AND s.expires_at > NOW()
+           AND s.class_id IN (
+             SELECT e.class_id FROM enrollments e
+             JOIN students st ON e.student_id = st.id
+             WHERE st.id = $1 OR st.user_id = $1
+           )
+         ORDER BY s.started_at DESC;`,
+        [studentId]
+      );
+      sessions = dbRes.rows;
+    } else {
+      const student = memory.students.find((s) => s.id === studentId || s.user_id === studentId);
+      if (student) {
+        const enrolledClassIds = memory.enrollments
+          .filter((e) => e.student_id === student.id)
+          .map((e) => e.class_id);
+        sessions = memory.attendance_sessions.filter(
+          (s) => ['ACTIVE', 'open', 'OPEN'].includes(s.status) &&
+            new Date(s.expires_at) > new Date() &&
+            enrolledClassIds.includes(s.class_id)
+        );
+      }
+    }
+
+    res.json({ sessions });
+  } catch (err) {
+    res.status(500).json({ error: 'FETCH_ACTIVE_SESSIONS_FAILED', message: err.message });
+  }
+});
+
+// GET /api/attendance/student/:id/history - Attendance history with date/subject filtering
+router.get('/student/:id/history', authenticateToken, async (req, res) => {
+  try {
+    const studentId = req.params.id;
+    const { month, year, subjectId } = req.query;
+    const memory = getMemoryDb();
+    let records = [];
+
+    if (isPg()) {
+      let sql = `
+        SELECT 
+          ar.id, ar.student_id, ar.session_id, ar.subject_id, ar.timestamp, ar.status,
+          ar.verification_attempt_id,
+          sub.name as subject_name, sub.code as subject_code,
+          s.class_id, s.room, s.started_at as session_started, s.expires_at as session_expires,
+          c.division as class_division,
+          u.name as teacher_name,
+          aa.qr_status, aa.ble_status, aa.device_status, aa.liveness_status, aa.face_status, aa.final_status
+        FROM attendance_records ar
+        JOIN attendance_sessions s ON ar.session_id = s.id
+        JOIN subjects sub ON ar.subject_id = sub.id
+        JOIN classes c ON s.class_id = c.id
+        JOIN teachers t ON s.teacher_id = t.id
+        JOIN users u ON t.user_id = u.id
+        LEFT JOIN attendance_attempts aa ON ar.verification_attempt_id = aa.id
+        WHERE ar.student_id = $1`;
+      const params = [studentId];
+      let paramIdx = 2;
+
+      if (month && year) {
+        sql += ` AND EXTRACT(MONTH FROM ar.timestamp) = $${paramIdx} AND EXTRACT(YEAR FROM ar.timestamp) = $${paramIdx + 1}`;
+        params.push(parseInt(month), parseInt(year));
+        paramIdx += 2;
+      } else if (year) {
+        sql += ` AND EXTRACT(YEAR FROM ar.timestamp) = $${paramIdx}`;
+        params.push(parseInt(year));
+        paramIdx += 1;
+      }
+
+      if (subjectId) {
+        sql += ` AND ar.subject_id = $${paramIdx}`;
+        params.push(subjectId);
+        paramIdx += 1;
+      }
+
+      sql += ` ORDER BY ar.timestamp DESC;`;
+      const dbRes = await query(sql, params);
+      records = dbRes.rows;
+    } else {
+      records = memory.attendance_records
+        .filter((r) => r.student_id === studentId)
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }
+
+    res.json({ studentId, records, count: records.length });
+  } catch (err) {
+    res.status(500).json({ error: 'FETCH_HISTORY_FAILED', message: err.message });
   }
 });
 

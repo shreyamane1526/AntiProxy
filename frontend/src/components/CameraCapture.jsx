@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { Camera, LoaderCircle } from "lucide-react"
+import { decodeQRFromImageData } from "../utils/qrDecoder"
 
 export function isHandheldDevice() {
   if (typeof navigator === "undefined") return false
@@ -14,7 +15,7 @@ export function cameraFacingFor(step) {
   return "user"
 }
 
-export default function CameraCapture({ facing = "user", shape = "square", onCapture, capturedSrc, captureLabel = "Capture photo" }) {
+export default function CameraCapture({ facing = "user", shape = "square", onCapture, onFrameScan, capturedSrc, captureLabel = "Capture photo" }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
@@ -60,6 +61,41 @@ export default function CameraCapture({ facing = "user", shape = "square", onCap
     return () => stopStream()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facing, capturedSrc])
+
+  // Continuous frame QR scanner loop
+  useEffect(() => {
+    if (status !== "live" || !onFrameScan || capturedSrc) return
+
+    let animId
+    let lastScanTime = 0
+
+    const scanLoop = (timestamp) => {
+      // Throttle scan to every 200ms for high performance
+      if (timestamp - lastScanTime > 200) {
+        lastScanTime = timestamp
+        const video = videoRef.current
+        const canvas = canvasRef.current
+        if (video && canvas && video.readyState >= 2) {
+          canvas.width = video.videoWidth || 640
+          canvas.height = video.videoHeight || 480
+          const ctx = canvas.getContext("2d")
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+          try {
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+            const decoded = decodeQRFromImageData(imageData)
+            if (decoded && !decoded.error) {
+              onFrameScan(decoded, canvas.toDataURL("image/jpeg", 0.9))
+              return
+            }
+          } catch (e) {}
+        }
+      }
+      animId = requestAnimationFrame(scanLoop)
+    }
+
+    animId = requestAnimationFrame(scanLoop)
+    return () => cancelAnimationFrame(animId)
+  }, [status, onFrameScan, capturedSrc])
 
   const capture = () => {
     const video = videoRef.current

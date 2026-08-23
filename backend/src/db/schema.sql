@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS students (
 
 CREATE TABLE IF NOT EXISTS teachers (
   id VARCHAR(64) PRIMARY KEY,
-  user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  department VARCHAR(255) NOT NULL,
+  user_id VARCHAR(64) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  department_id VARCHAR(64) REFERENCES departments(id) ON DELETE SET NULL,
   designation VARCHAR(255) NOT NULL,
   employee_id VARCHAR(64) UNIQUE NOT NULL,
   photo_url TEXT
@@ -36,20 +36,21 @@ CREATE TABLE IF NOT EXISTS teachers (
 
 CREATE TABLE IF NOT EXISTS hods (
   id VARCHAR(64) PRIMARY KEY,
-  user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  department VARCHAR(255) NOT NULL,
+  user_id VARCHAR(64) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  department_id VARCHAR(64) REFERENCES departments(id) ON DELETE SET NULL,
   designation VARCHAR(255) NOT NULL,
   photo_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS admins (
   id VARCHAR(64) PRIMARY KEY,
-  user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  department VARCHAR(255) NOT NULL
+  user_id VARCHAR(64) UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  department_id VARCHAR(64) REFERENCES departments(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS classes (
   id VARCHAR(64) PRIMARY KEY,
+  department_id VARCHAR(64) REFERENCES departments(id) ON DELETE CASCADE,
   name VARCHAR(255) NOT NULL,
   code VARCHAR(64) NOT NULL,
   division VARCHAR(32) NOT NULL,
@@ -62,6 +63,14 @@ CREATE TABLE IF NOT EXISTS subjects (
   name VARCHAR(255) NOT NULL,
   teacher_id VARCHAR(64) REFERENCES teachers(id) ON DELETE SET NULL,
   division VARCHAR(32) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS teacher_subject_assignments (
+  id VARCHAR(64) PRIMARY KEY,
+  teacher_id VARCHAR(64) NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
+  subject_id VARCHAR(64) NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  class_id VARCHAR(64) NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  UNIQUE(teacher_id, subject_id, class_id)
 );
 
 CREATE TABLE IF NOT EXISTS enrollments (
@@ -89,7 +98,7 @@ CREATE TABLE IF NOT EXISTS attendance_sessions (
   room VARCHAR(128) NOT NULL,
   device_name VARCHAR(255) NOT NULL,
   session_secret VARCHAR(255) NOT NULL,
-  status VARCHAR(32) DEFAULT 'open' CHECK (status IN ('open', 'closed', 'expired')),
+  status VARCHAR(32) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'ENDED', 'EXPIRED', 'CLOSED', 'OPEN', 'active', 'ended', 'expired', 'closed', 'open')),
   started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   expires_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
@@ -138,6 +147,18 @@ CREATE TABLE IF NOT EXISTS attendance_rules (
   target_role VARCHAR(32) NOT NULL,
   enabled BOOLEAN DEFAULT TRUE
 );
+
+CREATE TABLE IF NOT EXISTS timetables (
+  id VARCHAR(64) PRIMARY KEY,
+  class_id VARCHAR(64) NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  teacher_id VARCHAR(64) NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
+  subject_id VARCHAR(64) NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+  day_of_week VARCHAR(16) NOT NULL,
+  start_time TIME NOT NULL,
+  end_time TIME NOT NULL,
+  room VARCHAR(64) NOT NULL
+);
+
 
 CREATE TABLE IF NOT EXISTS risk_scores (
   id VARCHAR(64) PRIMARY KEY,

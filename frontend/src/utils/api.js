@@ -49,12 +49,25 @@ export const api = {
     getSessions: () => apiFetch('/attendance/sessions'),
     getQr: (sessionId) => apiFetch(`/attendance/sessions/${sessionId}/qr`),
     endSession: (sessionId) => apiFetch(`/attendance/sessions/${sessionId}/end`, { method: 'POST' }),
-    verifyQr: (sessionId, qrToken) => apiFetch('/attendance/verify-qr', { method: 'POST', body: JSON.stringify({ sessionId, qrToken }) }),
+    verifyQr: (sessionId, token) => apiFetch('/attendance/verify-qr', { method: 'POST', body: JSON.stringify({ sessionId, token }) }),
     verifyBle: (sessionDeviceName, bleRssi, bleSupported) => apiFetch('/attendance/verify-ble', { method: 'POST', body: JSON.stringify({ sessionDeviceName, bleRssi, bleSupported }) }),
     verifyLiveness: (faceImageData) => apiFetch('/attendance/verify-liveness', { method: 'POST', body: JSON.stringify({ faceImageData }) }),
     verify: (verificationData) => apiFetch('/attendance/verify', { method: 'POST', body: JSON.stringify(verificationData) }),
     mark: (payload) => apiFetch('/attendance/mark', { method: 'POST', body: JSON.stringify(payload) }),
+    getTeacherAssignments: () => apiFetch('/attendance/teacher-assignments'),
     getStudentRecords: (studentId) => apiFetch(`/attendance/student/${studentId}`),
+    getActiveSessions: (studentId) => apiFetch(`/attendance/active-sessions${studentId ? '?studentId=' + studentId : ''}`),
+    getStudentHistory: (studentId, filters = {}) => {
+      const params = new URLSearchParams(filters).toString();
+      return apiFetch(`/attendance/student/${studentId}/history${params ? '?' + params : ''}`);
+    },
+    getSession: (sessionId) => apiFetch(`/attendance/sessions/${sessionId}`),
+  },
+  timetables: {
+    get: (params = {}) => {
+      const query = new URLSearchParams(params).toString();
+      return apiFetch(`/timetables${query ? '?' + query : ''}`);
+    },
   },
   analytics: {
     student: (id) => apiFetch(`/analytics/student/${id}`),

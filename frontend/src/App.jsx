@@ -58,6 +58,10 @@ export default function App() {
           path="/student/mark-attendance"
           element={user?.role === "student" ? <MarkAttendance /> : <Unauthorized role="student" />}
         />
+        <Route
+          path="/attendance/scan"
+          element={user?.role === "student" ? <MarkAttendance /> : <Unauthorized role="student" />}
+        />
         <Route path="/student/profile" element={user?.role === "student" ? <Profile /> : <Unauthorized role="student" />} />
 
         <Route

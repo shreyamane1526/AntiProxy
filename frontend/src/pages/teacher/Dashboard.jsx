@@ -5,25 +5,39 @@ import Modal from "../../components/Modal"
 import TimetableView, { formatHour } from "../../components/TimetableView"
 import { teacherClasses, teacherTimetable } from "../../data/mockData"
 import { greetingForHour } from "../../utils/attendance"
+import { useAuth } from "../../context/AuthContext"
 import { api } from "../../utils/api"
 import toast from "react-hot-toast"
 
 function lectureLabel(slot) {
-  const cls = teacherClasses.find((item) => item.id === slot.classId)
+  if (!slot) return null;
+  const cls = teacherClasses.find((item) => item.id === slot.classId);
+  const dayStr = slot.day || slot.dayOfWeek || "Monday";
+  const startH = Number(slot.startHour) || (slot.startTime ? parseInt(slot.startTime.split(":")[0], 10) : 9);
+  const dur = Number(slot.duration) || 1;
+  const classId = slot.classId || slot.class_id || (cls ? cls.id : "cls-cse-a");
+  const subjectId = slot.subjectId || slot.subject_id || (cls ? cls.subjectId : "sub-cs301");
+
   return {
     ...slot,
-    subject: cls?.name || "Lecture",
-    code: cls?.code,
-    division: cls?.division,
-    type: cls?.type || "Lecture",
-    meta: cls?.division,
-  }
+    classId,
+    subjectId,
+    day: dayStr,
+    startHour: startH,
+    duration: dur,
+    subject: slot.subject || slot.subject_name || cls?.name || "Lecture",
+    code: slot.code || slot.subject_code || cls?.code || "CS301",
+    division: slot.division || slot.class_division || cls?.division || "CSE-A",
+    type: slot.type || cls?.type || "Lecture",
+    meta: slot.division || slot.class_division || cls?.division || "CSE-A",
+    room: slot.room || "Room 201",
+  };
 }
 
 function DynamicQrDisplay({ sessionId, onEndSession }) {
   const [qrPayload, setQrPayload] = useState("")
   const [qrCountdown, setQrCountdown] = useState(30)
-  const [sessionCountdown, setSessionCountdown] = useState(300) // 5 minutes (300s)
+  const [sessionCountdown, setSessionCountdown] = useState(420) // 7 minutes (420s)
   const [status, setStatus] = useState("ACTIVE")
 
   // Fetch 30-second QR Payload from backend
@@ -41,10 +55,19 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
         setStatus("ENDED")
         return
       }
+      if (res.sessionExpiresAt) {
+        const remaining = Math.max(0, Math.floor((new Date(res.sessionExpiresAt) - new Date()) / 1000))
+        if (remaining <= 0) {
+          setStatus("EXPIRED")
+          toast.error("Attendance session expired.")
+          return
+        }
+        setSessionCountdown(remaining)
+      }
+
       setQrPayload(res.qrPayload || `attendance://session/${sessionId}?token=QR-DYN-${Date.now()}`)
       setQrCountdown(30)
     } catch (err) {
-      // Local fallback
       setQrPayload(`attendance://session/${sessionId}?token=QR-DYN-${Math.floor(Date.now() / 30000)}`)
       setQrCountdown(30)
     }
@@ -142,9 +165,23 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
         />
       </div>
 
-      <p className="text-xs text-muted">
-        ATTENDANCE ACTIVE · Project this QR to the classroom for students to scan.
-      </p>
+      <div className="space-y-2">
+        <p className="text-xs text-muted font-mono bg-page p-2 rounded border border-border break-all">
+          {qrPayload || `attendance://session/${sessionId}`}
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            if (qrPayload) {
+              navigator.clipboard.writeText(qrPayload)
+              toast.success("QR Payload copied! Paste in Student Mark Attendance page.")
+            }
+          }}
+          className="rounded-lg border border-teal text-teal-dark px-3 py-1.5 text-xs font-bold hover:bg-teal/10 transition"
+        >
+          📋 Copy QR Payload for Student Test
+        </button>
+      </div>
 
       {/* END ATTENDANCE Button */}
       <button
@@ -159,13 +196,78 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
 }
 
 export default function TeacherDashboard() {
-  const [selectedClassId, setSelectedClassId] = useState(teacherClasses[0]?.id || "class-dbms-b")
-  const [selectedSubjectId, setSelectedSubjectId] = useState("sub-dbms")
+  const { user, profile } = useAuth()
+  const teacherName = profile?.name || user?.name || "Teacher"
+  const [assignments, setAssignments] = useState([])
+  const [dbTimetable, setDbTimetable] = useState([])
+  const [selectedClassId, setSelectedClassId] = useState("cls-cse-a")
+  const [selectedSubjectId, setSelectedSubjectId] = useState("sub-cs301")
   const [selectedSlot, setSelectedSlot] = useState(null)
   const [qrReady, setQrReady] = useState(false)
   const [activeSessionId, setActiveSessionId] = useState(null)
 
-  const lectures = useMemo(() => teacherTimetable.map(lectureLabel), [])
+  useEffect(() => {
+    async function loadTeacherData() {
+      try {
+        const res = await api.attendance.getTeacherAssignments()
+        if (res && res.assignments && res.assignments.length > 0) {
+          setAssignments(res.assignments)
+          setSelectedClassId(res.assignments[0].class_id)
+          setSelectedSubjectId(res.assignments[0].subject_id)
+        }
+
+        const ttRes = await api.timetables.get({ teacherId: profile?.id || user?.id })
+        if (ttRes && ttRes.timetables && ttRes.timetables.length > 0) {
+          setDbTimetable(ttRes.timetables)
+        }
+      } catch (err) {
+        console.warn("Teacher data fetch fallback:", err.message)
+      }
+    }
+    loadTeacherData()
+  }, [profile, user])
+
+  const availableClasses = useMemo(() => {
+    if (assignments.length === 0) return teacherClasses
+    const map = new Map()
+    assignments.forEach((a) => {
+      if (!map.has(a.class_id)) {
+        map.set(a.class_id, {
+          id: a.class_id,
+          division: a.class_division,
+          name: `${a.subject_name} (${a.class_division})`,
+        })
+      }
+    })
+    return Array.from(map.values())
+  }, [assignments])
+
+  const availableSubjects = useMemo(() => {
+    if (assignments.length === 0) {
+      return [
+        { id: "sub-cs301", code: "CS301", name: "Database Management Systems" },
+        { id: "sub-cs302", code: "CS302", name: "Operating Systems" },
+        { id: "sub-cs303", code: "CS303", name: "Computer Networks" },
+        { id: "sub-cs304", code: "CS304", name: "Software Engineering" },
+        { id: "sub-cs305", code: "CS305", name: "Data Structures" },
+      ]
+    }
+    const filtered = assignments.filter((a) => a.class_id === selectedClassId)
+    const map = new Map()
+    filtered.forEach((a) => {
+      if (!map.has(a.subject_id)) {
+        map.set(a.subject_id, {
+          id: a.subject_id,
+          code: a.subject_code,
+          name: a.subject_name,
+        })
+      }
+    })
+    return Array.from(map.values())
+  }, [assignments, selectedClassId])
+
+  const rawLectures = dbTimetable.length > 0 ? dbTimetable : teacherTimetable
+  const lectures = useMemo(() => rawLectures.map(lectureLabel).filter(Boolean), [rawLectures])
 
   const handleStartAttendance = async (classIdParam, subjectIdParam) => {
     const classId = classIdParam || selectedClassId
@@ -180,22 +282,19 @@ export default function TeacherDashboard() {
       setQrReady(true)
       toast.success("Attendance session started! (5 minutes)")
     } catch (err) {
-      setActiveSessionId(`sess-${Date.now()}`)
-      setQrReady(true)
-      toast.success("Attendance session started!")
+      toast.error(err.message || "Failed to start attendance session")
     }
   }
 
-  const openLecture = (slot) => {
-    setSelectedSlot(slot)
-    setQrReady(false)
-    setActiveSessionId(null)
-  }
+  const openLecture = async (slot) => {
+    setSelectedSlot(slot);
+    await handleStartAttendance(slot.classId, slot.subjectId);
+  };
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title={`${greetingForHour()}, Teacher 👋`}
+        title={`${greetingForHour()}, ${teacherName.split(" ")[0]} 👋`}
         subtitle="Select a Class and Subject or choose a timetable slot to start a 5-minute attendance session with dynamic 30-second QR codes."
       />
 
@@ -210,12 +309,19 @@ export default function TeacherDashboard() {
             </label>
             <select
               value={selectedClassId}
-              onChange={(e) => setSelectedClassId(e.target.value)}
+              onChange={(e) => {
+                const newClassId = e.target.value
+                setSelectedClassId(newClassId)
+                const matching = assignments.filter((a) => a.class_id === newClassId)
+                if (matching.length > 0) {
+                  setSelectedSubjectId(matching[0].subject_id)
+                }
+              }}
               className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm font-semibold text-navy focus:border-teal focus:outline-none"
             >
-              {teacherClasses.map((cls) => (
+              {availableClasses.map((cls) => (
                 <option key={cls.id} value={cls.id}>
-                  {cls.name} ({cls.division})
+                  {cls.name || cls.division}
                 </option>
               ))}
             </select>
@@ -230,10 +336,11 @@ export default function TeacherDashboard() {
               onChange={(e) => setSelectedSubjectId(e.target.value)}
               className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm font-semibold text-navy focus:border-teal focus:outline-none"
             >
-              <option value="sub-dbms">CS301 - Database Management Systems</option>
-              <option value="sub-cn">CS302 - Computer Networks</option>
-              <option value="sub-daa">CS303 - Design & Analysis of Algorithms</option>
-              <option value="sub-os">CS304 - Operating Systems</option>
+              {availableSubjects.map((sub) => (
+                <option key={sub.id} value={sub.id}>
+                  {sub.code} - {sub.name}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -285,7 +392,7 @@ export default function TeacherDashboard() {
             {!qrReady ? (
               <button
                 type="button"
-                onClick={() => handleStartAttendance(selectedSlot.classId, selectedSlot.code)}
+                onClick={() => handleStartAttendance(selectedSlot.classId, selectedSlot.subjectId)}
                 className="w-full rounded-lg bg-teal px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-dark transition-colors shadow-sm"
               >
                 START ATTENDANCE
@@ -302,4 +409,3 @@ export default function TeacherDashboard() {
     </div>
   )
 }
-

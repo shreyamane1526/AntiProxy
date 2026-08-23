@@ -15,6 +15,18 @@ export class AttendanceVerificationEngine {
   }) {
     const memory = getMemoryDb();
 
+    // Resolve studentId to actual students.id
+    let resolvedStudentId = studentId;
+    if (isPg()) {
+      const stLookup = await query(`SELECT id FROM students WHERE id = $1 OR user_id = $1 LIMIT 1;`, [studentId]);
+      if (stLookup.rows.length > 0) {
+        resolvedStudentId = stLookup.rows[0].id;
+      }
+    } else {
+      const stObj = memory.students.find((s) => s.id === studentId || s.user_id === studentId);
+      if (stObj) resolvedStudentId = stObj.id;
+    }
+
     // 1. Fetch Session details
     let session = null;
     if (isPg()) {
@@ -32,7 +44,8 @@ export class AttendanceVerificationEngine {
       };
     }
 
-    if (session.status !== 'open' || new Date() > new Date(session.expires_at)) {
+    const activeStatuses = ['ACTIVE', 'open', 'OPEN'];
+    if (!activeStatuses.includes(session.status) || new Date() > new Date(session.expires_at)) {
       return {
         success: false,
         finalStatus: 'SESSION_EXPIRED',
@@ -45,12 +58,12 @@ export class AttendanceVerificationEngine {
     if (isPg()) {
       const res = await query(
         `SELECT * FROM attendance_records WHERE student_id = $1 AND session_id = $2;`,
-        [studentId, sessionId]
+        [resolvedStudentId, sessionId]
       );
       existingRecord = res.rows[0];
     } else {
       existingRecord = memory.attendance_records.find(
-        (r) => r.student_id === studentId && r.session_id === sessionId
+        (r) => r.student_id === resolvedStudentId && r.session_id === sessionId
       );
     }
 
@@ -67,12 +80,12 @@ export class AttendanceVerificationEngine {
     if (isPg()) {
       const res = await query(
         `SELECT * FROM registered_devices WHERE student_id = $1 AND status = 'active';`,
-        [studentId]
+        [resolvedStudentId]
       );
       registeredDev = res.rows[0];
     } else {
       registeredDev = memory.registered_devices.find(
-        (d) => d.student_id === studentId && d.status === 'active'
+        (d) => d.student_id === resolvedStudentId && d.status === 'active'
       );
     }
 
@@ -113,7 +126,7 @@ export class AttendanceVerificationEngine {
     const attemptId = `att-attempt-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const attemptRecord = {
       id: attemptId,
-      student_id: studentId,
+      student_id: resolvedStudentId,
       session_id: sessionId,
       device_identifier: deviceIdentifier || 'web-client',
       qr_status: qrStatus,
