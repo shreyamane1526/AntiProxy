@@ -31,15 +31,10 @@ export class QrService {
     const issuedAt = new Date().toISOString();
     const expiresAt = this.getWindowExpiry(windowIndex);
 
-    const payloadObj = {
-      v: 1,
-      sid: sessionId,
-      tok: token,
-      exp: expiresAt,
-    };
+    const qrPayload = `attendance://session/${sessionId}?token=${token}`;
 
     return {
-      qrPayload: JSON.stringify(payloadObj),
+      qrPayload,
       rawToken: token,
       issuedAt,
       expiresAt,
