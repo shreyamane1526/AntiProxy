@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { TIMETABLE_HOURS, WEEK_DAYS } from "../data/mockData"
+import { TIMETABLE_HOURS, WEEK_DAYS } from "../constants/timetable"
 
 function formatHour(hour) {
   const suffix = hour >= 12 ? "PM" : "AM"

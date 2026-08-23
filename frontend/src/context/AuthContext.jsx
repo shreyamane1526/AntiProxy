@@ -1,14 +1,9 @@
-import { createContext, useContext, useMemo, useState } from "react"
-import { users, studentProfile, teacherProfile, hodProfile } from "../data/mockData"
+import { createContext, useContext, useMemo, useState, useEffect } from "react"
+import { api } from "../utils/api"
 
 const AuthContext = createContext(null)
 const STORAGE_KEY = "attendix.user"
-
-function profileFor(user) {
-  if (user.role === "student") return studentProfile
-  if (user.role === "teacher") return teacherProfile
-  return hodProfile
-}
+const TOKEN_KEY = "attendix.token"
 
 function readStoredUser() {
   try {
@@ -29,23 +24,53 @@ export function AuthProvider({ children }) {
     }
   })
 
+  // Sync token validation on mount
+  useEffect(() => {
+    const token = localStorage.getItem(TOKEN_KEY)
+    if (token && !user) {
+      api.auth.me()
+        .then((res) => {
+          if (res.user) {
+            setUser(res.user)
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(res.user))
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem(TOKEN_KEY)
+          localStorage.removeItem(STORAGE_KEY)
+          setUser(null)
+        })
+    }
+  }, [])
+
   const value = useMemo(
     () => ({
       user,
-      profile: user ? profileFor(user) : null,
+      profile: user ? (user.profile || { name: user.name, email: user.email }) : null,
       markedSessions,
-      login: ({ email, role }) => {
-        const match =
-          users.find((item) => item.email.toLowerCase() === email.trim().toLowerCase() && item.role === role) ||
-          users.find((item) => item.role === role)
-        const next = { ...match, email: email.trim() || match.email }
-        setUser(next)
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-        return next
+      login: async ({ email, password, role }) => {
+        try {
+          const res = await api.auth.login({ email, password, role })
+          const authenticatedUser = {
+            ...res.user,
+            email: email.trim() || res.user.email,
+            profile: res.profile,
+          }
+          localStorage.setItem(TOKEN_KEY, res.access_token)
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(authenticatedUser))
+          setUser(authenticatedUser)
+          return authenticatedUser
+        } catch (err) {
+          // Strictly throw backend authentication errors. No mock fallback!
+          console.error("Backend authentication error:", err.message)
+          throw new Error(err.data?.message || err.message || "Invalid email or password")
+        }
       },
       logout: () => {
         setUser(null)
         localStorage.removeItem(STORAGE_KEY)
+        localStorage.removeItem(TOKEN_KEY)
+        api.auth.logout().catch(() => {})
       },
       hasMarked: (sessionId) => markedSessions.includes(sessionId),
       markSession: (sessionId) => {

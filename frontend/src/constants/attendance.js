@@ -12,12 +12,14 @@ export const ROLES = {
   student: "student",
   teacher: "teacher",
   hod: "hod",
+  admin: "admin",
 }
 
 export const ROLE_HOME = {
   student: "/student/dashboard",
   teacher: "/teacher/dashboard",
   hod: "/hod/dashboard",
+  admin: "/hod/dashboard",
 }
 
 export function getAttendanceStatus(percentage) {

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { ArrowLeft, Users } from "lucide-react"
 import PageHeader from "../../components/PageHeader"
 import DataTable from "../../components/DataTable"
@@ -7,9 +7,10 @@ import { AttendanceBadge } from "../../components/StatusBadge"
 import { teacherClasses } from "../../data/mockData"
 import { getAttendanceStatus } from "../../constants/attendance"
 import { percentage } from "../../utils/attendance"
+import { api } from "../../utils/api"
 
 function withStats(student) {
-  const pct = percentage(student.present, student.total)
+  const pct = student.percent !== undefined ? student.percent : percentage(student.present, student.total)
   return {
     ...student,
     absent: Math.max(0, student.total - student.present),
@@ -20,10 +21,31 @@ function withStats(student) {
 
 export default function TeacherAnalytics() {
   const [classId, setClassId] = useState(null)
-  const selected = teacherClasses.find((item) => item.id === classId)
-  const students = selected ? selected.students.map(withStats) : []
+  const [classApiData, setClassApiData] = useState(null)
 
-  if (selected) {
+  const selected = teacherClasses.find((item) => item.id === classId)
+
+  useEffect(() => {
+    if (classId) {
+      async function loadClassAnalytics() {
+        try {
+          const res = await api.analytics.class(classId)
+          if (res) setClassApiData(res)
+        } catch (err) {
+          console.warn("Class analytics API fallback:", err.message)
+        }
+      }
+      loadClassAnalytics()
+    } else {
+      setClassApiData(null)
+    }
+  }, [classId])
+
+  const rawStudents = classApiData?.students || (selected ? selected.students : [])
+  const students = rawStudents.map(withStats)
+
+  if (selected || classApiData) {
+    const title = classApiData ? classApiData.className : `${selected?.name} · ${selected?.division}`
     return (
       <div>
         <button
@@ -35,8 +57,8 @@ export default function TeacherAnalytics() {
           All classes
         </button>
         <PageHeader
-          title={`${selected.name} · ${selected.division}`}
-          subtitle={`${selected.code} · ${selected.type} · ${students.length} students`}
+          title={title}
+          subtitle={`Live DB Records · ${students.length} enrolled students`}
         />
         <DataTable
           columns={[
@@ -64,7 +86,7 @@ export default function TeacherAnalytics() {
 
   return (
     <div>
-      <PageHeader title="Student Analytics" subtitle="Select a class to view student attendance." />
+      <PageHeader title="Student Analytics" subtitle="Select a class to view live database attendance records." />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {teacherClasses.map((item) => (
           <button
@@ -78,9 +100,9 @@ export default function TeacherAnalytics() {
             <p className="mt-1 text-sm text-muted">
               {item.division} · {item.type}
             </p>
-            <p className="mt-4 inline-flex items-center gap-2 text-sm text-teal-dark">
+            <p className="mt-4 inline-flex items-center gap-2 text-sm text-teal-dark font-medium">
               <Users size={16} />
-              {item.students.length} students
+              {item.students.length} enrolled students
             </p>
           </button>
         ))}

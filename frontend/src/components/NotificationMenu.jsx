@@ -1,14 +1,35 @@
 import { useEffect, useRef, useState } from "react"
 import { Bell } from "lucide-react"
 import { useAuth } from "../context/AuthContext"
-import { notifications } from "../data/mockData"
+import { api } from "../utils/api"
 
 export default function NotificationMenu() {
   const { user } = useAuth()
-  const items = notifications[user?.role] || []
-  const unread = items.filter((item) => item.unread).length
+  const [items, setItems] = useState([])
   const [open, setOpen] = useState(false)
   const rootRef = useRef(null)
+
+  useEffect(() => {
+    async function loadNotifications() {
+      try {
+        const res = await api.notifications.list()
+        if (res?.notifications) {
+          setItems(res.notifications.map(n => ({
+            id: n.id,
+            title: n.title,
+            body: n.body,
+            time: n.time_str || n.time || "Recently",
+            unread: n.unread,
+          })))
+        }
+      } catch (err) {
+        console.warn("Notifications API fallback:", err.message)
+      }
+    }
+    if (user) loadNotifications()
+  }, [user])
+
+  const unread = items.filter((item) => item.unread).length
 
   useEffect(() => {
     if (!open) return undefined
@@ -55,6 +76,9 @@ export default function NotificationMenu() {
                 </div>
               </li>
             ))}
+            {items.length === 0 && (
+              <li className="px-4 py-6 text-center text-xs text-muted">No notifications yet.</li>
+            )}
           </ul>
         </div>
       ) : null}
