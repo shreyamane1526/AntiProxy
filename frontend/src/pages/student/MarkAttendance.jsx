@@ -3,7 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom"
 import toast from "react-hot-toast"
 import {
   Bluetooth, Check, LoaderCircle, QrCode, ScanFace,
-  ShieldCheck, AlertCircle, Upload, Camera, X
+  ShieldCheck, AlertCircle, Upload, Camera, X,
+  ArrowLeftRight, RefreshCw, Sparkles, Fingerprint, UserCheck, RotateCcw, ArrowRight
 } from "lucide-react"
 import VerificationStep from "../../components/VerificationStep"
 import CameraCapture, { cameraFacingFor } from "../../components/CameraCapture"
@@ -11,6 +12,9 @@ import { useAuth } from "../../context/AuthContext"
 import { currentSession as mockSession } from "../../data/mockData"
 import { api } from "../../utils/api"
 import { decodeQRFromImageFile, parseQRPayload } from "../../utils/qrDecoder"
+import { detectFace, getFaceLandmarker } from "../../utils/faceDetection"
+import { verifyLiveness } from "../../utils/livenessCheck"
+import { generateEmbedding, loadFaceApiModels } from "../../utils/faceEmbedding"
 
 const steps = [
   { title: "BLE connection" },
@@ -61,6 +65,21 @@ export default function MarkAttendance() {
   const [qrCapturedImage, setQrCapturedImage] = useState(null)
   const fileInputRef = useRef(null)
   const verifyingRef = useRef(false)                        // guard against double-verify from rapid frames
+
+  /* ─── Biometric Face Verification state ─── */
+  const faceVideoRef = useRef(null)
+  const [faceState, setFaceState] = useState("aligning") // aligning | capturing_a | prompting | capturing_b | generating | verified | error
+  const [faceDetection, setFaceDetection] = useState(null)
+  const [faceLivenessCountdown, setFaceLivenessCountdown] = useState(1.5)
+  const [liveEmbedding, setLiveEmbedding] = useState(null)
+  const [livenessVerified, setLivenessVerified] = useState(false)
+  const [faceError, setFaceError] = useState(null)
+
+  // Preload face models
+  useEffect(() => {
+    getFaceLandmarker().catch(() => {})
+    loadFaceApiModels().catch(() => {})
+  }, [])
 
   /* ─── Load real session info from backend ─── */
   const fetchSessionInfo = useCallback(async () => {
@@ -238,14 +257,139 @@ export default function MarkAttendance() {
     }
   }
 
-  /* ─── Face capture ─── */
-  const onFaceCapture = async (dataUrl) => {
-    setFacePhoto(dataUrl)
+  /* ─── Continuous face detection during Step 3 ─── */
+  useEffect(() => {
+    if (step !== 3 || (faceState !== "aligning" && faceState !== "error")) return
+
+    let isMounted = true
+    let isProcessing = false
+
+    const interval = setInterval(async () => {
+      if (isProcessing) return
+      const video = faceVideoRef.current
+      if (!video || video.readyState < 2 || video.videoWidth === 0) return
+
+      try {
+        isProcessing = true
+        const result = await detectFace(video)
+        if (isMounted) setFaceDetection(result)
+      } catch (err) {
+        console.error("Face detection loop error:", err)
+      } finally {
+        isProcessing = false
+      }
+    }, 400)
+
+    return () => {
+      isMounted = false
+      clearInterval(interval)
+    }
+  }, [step, faceState])
+
+  /* ─── Execute Step 3 Face Verification (Liveness + 128-D Embedding) ─── */
+  const startFaceVerification = async () => {
+    const video = faceVideoRef.current
+    if (!video || video.readyState < 2 || video.videoWidth === 0) {
+      setFaceError({ status: "CAMERA_NOT_READY", message: "Camera is not ready yet. Please ensure camera access." })
+      setFaceState("error")
+      return
+    }
+
+    setFaceError(null)
+    setVerificationError(null)
+    setFaceState("capturing_a")
+
     try {
-      await api.attendance.verifyLiveness(dataUrl)
-      toast.success("Face liveness passed.")
-    } catch {
-      toast.success("Identity photo captured.")
+      // Step A: Capture neutral reference frame A
+      const frameA = await detectFace(video)
+      if (!frameA.detected || !frameA.landmarks) {
+        setFaceError({
+          status: "NO_FACE",
+          message: "No neutral face detected. Please look straight into the camera.",
+        })
+        setFaceState("error")
+        return
+      }
+
+      // Step B: Prompt user to turn head slightly for active liveness
+      setFaceState("prompting")
+      setFaceLivenessCountdown(1.5)
+
+      const durationMs = 1500
+      const startTime = Date.now()
+      await new Promise((resolve) => {
+        const timer = setInterval(() => {
+          const elapsed = Date.now() - startTime
+          const rem = Math.max(0, (durationMs - elapsed) / 1000)
+          setFaceLivenessCountdown(Math.round(rem * 10) / 10)
+          if (elapsed >= durationMs) {
+            clearInterval(timer)
+            resolve()
+          }
+        }, 100)
+      })
+
+      // Step C: Capture action frame B
+      setFaceState("capturing_b")
+      const frameB = await detectFace(video)
+      if (!frameB.detected || !frameB.landmarks) {
+        setFaceError({
+          status: "FACE_LOST",
+          message: "Face was lost during movement. Please stay centered within the circle.",
+        })
+        setFaceState("error")
+        return
+      }
+
+      // Step D: Evaluate liveness
+      const livenessEval = verifyLiveness(frameA.landmarks, frameB.landmarks, "turn_head")
+      if (!livenessEval.live) {
+        setFaceError({
+          status: "LIVENESS_FAILED",
+          message: "Active liveness check failed. Please turn your head naturally when prompted.",
+        })
+        setFaceState("error")
+        return
+      }
+
+      // Step E: Capture snapshot image for preview and extract 128-D descriptor
+      const canvas = document.createElement("canvas")
+      canvas.width = video.videoWidth || 640
+      canvas.height = video.videoHeight || 480
+      const ctx = canvas.getContext("2d")
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      const capturedDataUrl = canvas.toDataURL("image/jpeg", 0.9)
+      setFacePhoto(capturedDataUrl)
+
+      setFaceState("generating")
+      let embedding = null
+      try {
+        embedding = await generateEmbedding(canvas)
+      } catch (embErr) {
+        console.warn("Canvas embedding failed, trying direct video:", embErr)
+        embedding = await generateEmbedding(video)
+      }
+
+      if (!embedding || embedding.length !== 128) {
+        setFaceError({
+          status: "EMBEDDING_FAILED",
+          message: "Could not compute 128-D biometric descriptor. Please ensure adequate lighting.",
+        })
+        setFaceState("error")
+        return
+      }
+
+      setLiveEmbedding(embedding)
+      setLivenessVerified(true)
+      setFaceState("verified")
+      toast.success("Face identity & liveness verified!")
+    } catch (err) {
+      console.error("Face verification pipeline error:", err)
+      setFaceError({
+        status: "PIPELINE_ERROR",
+        message: err.message || "An unexpected error occurred during face verification.",
+      })
+      setFaceState("error")
     }
   }
 
@@ -257,6 +401,12 @@ export default function MarkAttendance() {
       setStep(4)
       return
     }
+
+    if (!liveEmbedding || liveEmbedding.length !== 128 || !livenessVerified) {
+      toast.error("Please complete the face verification check first.")
+      return
+    }
+
     setVerifying(true)
     setVerificationError(null)
     try {
@@ -267,6 +417,8 @@ export default function MarkAttendance() {
         bleRssi: -65,
         bleSupported: true,
         faceImageData: facePhoto || "data:image/jpeg;base64,sample",
+        liveEmbedding,
+        livenessVerified: true,
       })
       if (res.success) {
         markSession(sid)
@@ -278,7 +430,7 @@ export default function MarkAttendance() {
         toast.error(`Verification Failed: ${msg}`)
       }
     } catch (err) {
-      const msg = err.message || "Verification failed"
+      const msg = err.data?.failureReason || err.data?.message || err.message || "Verification failed"
       setVerificationError(msg)
       toast.error(`Verification Error: ${msg}`)
     } finally {
@@ -291,6 +443,10 @@ export default function MarkAttendance() {
     unmarkSession(effectiveSessionId)
     setBle("idle")
     setFacePhoto(null)
+    setLiveEmbedding(null)
+    setLivenessVerified(false)
+    setFaceState("aligning")
+    setFaceError(null)
     setVerificationError(null)
     setQrState("idle")
     setQrVerifiedInfo(null)
@@ -298,6 +454,19 @@ export default function MarkAttendance() {
     setScanMode(null)
     setQrCapturedImage(null)
     setScannedToken("")
+    setManualInput("")
+    setStep(1)
+    toast.success("Session reset.")
+  }
+
+  const retakeFaceStep = () => {
+    setFacePhoto(null)
+    setLiveEmbedding(null)
+    setLivenessVerified(false)
+    setFaceState("aligning")
+    setFaceError(null)
+    setVerificationError(null)
+  }
     setManualInput("")
     setStep(1)
     toast.success("Session reset.")
@@ -570,40 +739,173 @@ export default function MarkAttendance() {
           </div>
         )}
 
-        {/* ═══════ STEP 3: FACE ═══════ */}
+        {/* ═══════ STEP 3: FACE & ACTIVE LIVENESS VERIFICATION ═══════ */}
         {step === 3 && (
-          <div className="text-center">
+          <div className="text-center max-w-lg mx-auto">
             <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-teal/10 text-teal-dark">
               <ScanFace size={26} />
             </span>
-            <h2 className="mt-4 text-xl font-bold text-navy">Identity Verification</h2>
-            <p className="mx-auto mt-2 max-w-md text-sm text-muted">Position your face inside the frame to verify your identity.</p>
-            <div className="mt-6">
-              <CameraCapture
-                facing={cameraFacingFor("face")}
-                shape="circle"
-                capturedSrc={facePhoto}
-                onCapture={onFaceCapture}
-                captureLabel="Capture face"
-              />
-            </div>
-            {verificationError && (
-              <div className="mt-4 flex items-center justify-center gap-2 rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700">
-                <AlertCircle size={18} />
-                <span>{verificationError}</span>
+            <h2 className="mt-4 text-xl font-bold text-navy">Identity & Liveness Verification</h2>
+            <p className="mx-auto mt-2 max-w-md text-sm text-muted">
+              {faceState === "verified"
+                ? "Biometric identity verified. You are ready to mark attendance."
+                : "Center your face in the camera frame and perform the active liveness check."}
+            </p>
+
+            {/* Camera Frame (when not yet verified) */}
+            {faceState !== "verified" && (
+              <div className="relative mt-6">
+                <CameraCapture
+                  facing={cameraFacingFor("face")}
+                  shape="circle"
+                  videoRef={faceVideoRef}
+                />
+
+                {/* Prompting overlay for active head-turn challenge */}
+                {faceState === "prompting" && (
+                  <div className="absolute inset-0 rounded-full max-w-[256px] max-h-[256px] mx-auto bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center border-2 border-teal animate-fade-in z-10">
+                    <ArrowLeftRight size={32} className="text-teal mb-2 animate-bounce" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-white">Active Challenge</span>
+                    <p className="text-sm font-extrabold text-teal mt-1">"Turn your head slightly left"</p>
+                    <span className="text-2xl font-mono font-black text-amber-400 mt-2">
+                      {faceLivenessCountdown.toFixed(1)}s
+                    </span>
+                  </div>
+                )}
+
+                {faceState === "capturing_a" && (
+                  <div className="absolute inset-0 rounded-full max-w-[256px] max-h-[256px] mx-auto bg-slate-950/70 flex flex-col items-center justify-center text-center z-10">
+                    <RefreshCw size={24} className="animate-spin text-teal mb-2" />
+                    <span className="text-xs text-white font-medium">Capturing reference…</span>
+                  </div>
+                )}
+
+                {faceState === "capturing_b" && (
+                  <div className="absolute inset-0 rounded-full max-w-[256px] max-h-[256px] mx-auto bg-slate-950/70 flex flex-col items-center justify-center text-center z-10">
+                    <RefreshCw size={24} className="animate-spin text-teal mb-2" />
+                    <span className="text-xs text-white font-medium">Verifying movement…</span>
+                  </div>
+                )}
+
+                {faceState === "generating" && (
+                  <div className="absolute inset-0 rounded-full max-w-[256px] max-h-[256px] mx-auto bg-slate-950/70 flex flex-col items-center justify-center text-center z-10">
+                    <RefreshCw size={24} className="animate-spin text-teal mb-2" />
+                    <span className="text-xs text-white font-medium">Computing 128-D embedding…</span>
+                  </div>
+                )}
               </div>
             )}
-            {facePhoto && (
-              <div className="mt-6 space-y-2">
-                <p className="font-semibold text-success">Identity Verified ✓</p>
-                <p className="text-sm text-muted">Student: {profile?.name}</p>
-                <div className="mt-2 flex flex-wrap justify-center gap-3">
-                  <button type="button" onClick={() => setFacePhoto(null)}
-                    className="rounded-lg border border-border px-5 py-2.5 text-sm font-semibold text-navy hover:border-teal">
+
+            {/* Alignment detection telemetry */}
+            {faceState === "aligning" && (
+              <div className="mt-4 p-3 rounded-xl border border-border bg-page text-xs font-semibold">
+                {faceDetection?.detected ? (
+                  <span className="text-success flex items-center justify-center gap-2">
+                    <UserCheck size={16} /> Face aligned ({Math.round((faceDetection.confidence || 0.9) * 100)}%) — Ready
+                  </span>
+                ) : (
+                  <span className="text-muted flex items-center justify-center gap-2">
+                    Look directly into the camera circle
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Error during face detection or liveness */}
+            {faceState === "error" && faceError && (
+              <div className="mt-4 rounded-lg bg-red-50 p-4 text-left border border-red-200">
+                <div className="flex items-start gap-2">
+                  <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-600" />
+                  <div>
+                    <p className="text-xs font-bold text-red-700 uppercase">{faceError.status?.replace(/_/g, " ")}</p>
+                    <p className="mt-0.5 text-xs text-red-600">{faceError.message}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={retakeFaceStep}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-1.5 text-xs font-bold text-white shadow hover:bg-red-700"
+                >
+                  <RotateCcw size={14} /> Try Face Check Again
+                </button>
+              </div>
+            )}
+
+            {/* Backend Verification Error (e.g. FACE_NOT_REGISTERED / FACE_NO_MATCH) */}
+            {verificationError && (
+              <div className="mt-4 rounded-lg bg-red-50 p-4 text-left border border-red-200">
+                <div className="flex items-start gap-2">
+                  <AlertCircle size={20} className="mt-0.5 shrink-0 text-red-600" />
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-red-700">Verification Engine Error</p>
+                    <p className="mt-1 text-xs text-red-600">{verificationError}</p>
+
+                    {verificationError.toLowerCase().includes("register") && (
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={() => navigate("/student/face-registration")}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-teal px-4 py-2 text-xs font-bold text-white shadow hover:bg-teal-dark cursor-pointer"
+                        >
+                          <Fingerprint size={14} /> Register Face Profile Now <ArrowRight size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons for Aligning state */}
+            {faceState === "aligning" && (
+              <div className="mt-5">
+                <button
+                  type="button"
+                  onClick={startFaceVerification}
+                  disabled={!faceDetection?.detected}
+                  className={`w-full py-3 rounded-xl font-bold text-sm shadow-md transition flex items-center justify-center gap-2 ${
+                    faceDetection?.detected
+                      ? "bg-teal hover:bg-teal-dark text-white cursor-pointer"
+                      : "bg-slate-200 text-muted cursor-not-allowed"
+                  }`}
+                >
+                  <Sparkles size={18} />
+                  Start Liveness & Face Verification
+                </button>
+              </div>
+            )}
+
+            {/* Success state after biometric extraction */}
+            {faceState === "verified" && facePhoto && (
+              <div className="mt-6 space-y-4">
+                <img
+                  src={facePhoto}
+                  alt="Captured face"
+                  className="mx-auto h-28 w-28 rounded-full object-cover border-4 border-success shadow-md"
+                />
+
+                <div className="rounded-xl border border-success/30 bg-success/5 p-4 text-left space-y-1">
+                  <p className="text-sm font-bold text-success flex items-center gap-1.5">
+                    <Check size={16} /> Biometric Identity Verified
+                  </p>
+                  <p className="text-xs text-navy"><span className="font-semibold">Student:</span> {profile?.name}</p>
+                  <p className="text-xs text-muted">128-D descriptor & active liveness verified</p>
+                </div>
+
+                <div className="flex flex-wrap justify-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={retakeFaceStep}
+                    className="rounded-lg border border-border px-5 py-2.5 text-sm font-semibold text-navy hover:border-teal"
+                  >
                     Retake
                   </button>
-                  <button type="button" onClick={complete} disabled={verifying}
-                    className="rounded-lg bg-navy px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-dark disabled:opacity-50 inline-flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={complete}
+                    disabled={verifying}
+                    className="rounded-lg bg-navy px-6 py-2.5 text-sm font-semibold text-white hover:bg-slate-dark disabled:opacity-50 inline-flex items-center gap-2 shadow-md cursor-pointer"
+                  >
                     {verifying && <LoaderCircle className="animate-spin" size={16} />}
                     Mark Attendance
                   </button>

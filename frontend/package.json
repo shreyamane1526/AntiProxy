@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@tailwindcss/vite": "^4.3.3",
+    "face-api.js": "^0.22.2",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.33.0",
     "qrcode.react": "^4.2.0",

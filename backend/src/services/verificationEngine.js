@@ -12,6 +12,8 @@ export class AttendanceVerificationEngine {
     bleRssi,
     bleSupported = true,
     faceImageData,
+    liveEmbedding,
+    livenessVerified,
   }) {
     const memory = getMemoryDb();
 
@@ -120,7 +122,11 @@ export class AttendanceVerificationEngine {
     });
 
     // 6. Verify Face & Liveness
-    const faceResult = FaceService.verifyFaceLiveness({ faceImageData });
+    const faceResult = await FaceService.verifyFaceLiveness({
+      studentId: resolvedStudentId,
+      liveEmbedding,
+      livenessVerified,
+    });
 
     // Combine results
     const qrPassed = qrResult.valid;

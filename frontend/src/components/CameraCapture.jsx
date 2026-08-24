@@ -15,8 +15,17 @@ export function cameraFacingFor(step) {
   return "user"
 }
 
-export default function CameraCapture({ facing = "user", shape = "square", onCapture, onFrameScan, capturedSrc, captureLabel = "Capture photo" }) {
-  const videoRef = useRef(null)
+export default function CameraCapture({
+  facing = "user",
+  shape = "square",
+  onCapture,
+  onFrameScan,
+  capturedSrc,
+  captureLabel = "Capture photo",
+  videoRef: externalVideoRef,
+}) {
+  const localVideoRef = useRef(null)
+  const videoRef = externalVideoRef || localVideoRef
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
   const [status, setStatus] = useState("requesting")

@@ -12,6 +12,8 @@ import TeacherDashboard from "./pages/teacher/Dashboard"
 import TeacherAnalytics from "./pages/teacher/Analytics"
 import HodDashboard from "./pages/hod/Dashboard"
 import Profile from "./pages/Profile"
+import FaceRegistration from "./pages/student/FaceRegistration"
+import FaceDetectionTest from "./pages/dev/FaceDetectionTest"
 
 function Unauthorized({ role }) {
   const { user } = useAuth()
@@ -62,6 +64,10 @@ export default function App() {
           path="/attendance/scan"
           element={user?.role === "student" ? <MarkAttendance /> : <Unauthorized role="student" />}
         />
+        <Route
+          path="/student/face-registration"
+          element={user?.role === "student" ? <FaceRegistration /> : <Unauthorized role="student" />}
+        />
         <Route path="/student/profile" element={user?.role === "student" ? <Profile /> : <Unauthorized role="student" />} />
 
         <Route
@@ -77,6 +83,8 @@ export default function App() {
         <Route path="/hod/dashboard" element={user?.role === "hod" ? <HodDashboard /> : <Unauthorized role="hod" />} />
         <Route path="/hod/profile" element={user?.role === "hod" ? <Profile /> : <Unauthorized role="hod" />} />
       </Route>
+
+      <Route path="/dev/face-test" element={<FaceDetectionTest />} />
 
       <Route path="*" element={<Navigate to={user ? ROLE_HOME[user.role] : "/"} replace />} />
     </Routes>

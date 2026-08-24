@@ -12,6 +12,7 @@ import riskRoutes from './routes/risk.js';
 import ruleRoutes from './routes/rules.js';
 import notificationRoutes from './routes/notifications.js';
 import timetablesRoutes from './routes/timetables.js';
+import faceProfileRoutes from './routes/faceProfile.js';
 
 dotenv.config();
 
@@ -38,6 +39,7 @@ app.use('/api/risk', riskRoutes);
 app.use('/api/rules', ruleRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/timetables', timetablesRoutes);
+app.use('/api/students', faceProfileRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

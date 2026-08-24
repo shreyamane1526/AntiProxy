@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from "react-router-dom"
-import { BarChart3, LayoutDashboard, LogOut, PanelLeftClose, PanelLeftOpen, UserRound } from "lucide-react"
+import { BarChart3, Fingerprint, LayoutDashboard, LogOut, PanelLeftClose, PanelLeftOpen, UserRound } from "lucide-react"
 import toast from "react-hot-toast"
 import { useAuth } from "../context/AuthContext"
 import Avatar from "./Avatar"
@@ -8,6 +8,7 @@ import ThemeToggle from "./ThemeToggle"
 const links = {
   student: [
     { to: "/student/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { to: "/student/face-registration", label: "Face Profile", icon: Fingerprint },
     { to: "/student/analytics", label: "Analytics", icon: BarChart3 },
     { to: "/student/profile", label: "Profile", icon: UserRound },
   ],
