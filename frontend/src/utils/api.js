@@ -47,7 +47,7 @@ export const api = {
   attendance: {
     createSession: (sessionData) => apiFetch('/attendance/sessions', { method: 'POST', body: JSON.stringify(sessionData) }),
     getSessions: () => apiFetch('/attendance/sessions'),
-    getQr: (sessionId) => apiFetch(`/attendance/sessions/${sessionId}/qr`),
+    getQr: (sessionId) => apiFetch(`/attendance/sessions/${sessionId}/qr?t=${Date.now()}`),
     endSession: (sessionId) => apiFetch(`/attendance/sessions/${sessionId}/end`, { method: 'POST' }),
     verifyQr: (sessionId, token) => apiFetch('/attendance/verify-qr', { method: 'POST', body: JSON.stringify({ sessionId, token }) }),
     verifyBle: (sessionDeviceName, bleRssi, bleSupported) => apiFetch('/attendance/verify-ble', { method: 'POST', body: JSON.stringify({ sessionDeviceName, bleRssi, bleSupported }) }),

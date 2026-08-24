@@ -35,7 +35,7 @@ function lectureLabel(slot) {
 function DynamicQrDisplay({ sessionId, onEndSession }) {
   const [qrPayload, setQrPayload] = useState("")
   const [qrCountdown, setQrCountdown] = useState(30)
-  const [sessionCountdown, setSessionCountdown] = useState(420) // 7 minutes (420s)
+  const [sessionCountdown, setSessionCountdown] = useState(300) // 5 minutes (300s)
   const [status, setStatus] = useState("ACTIVE")
   const [endSummary, setEndSummary] = useState(null)
 
@@ -60,7 +60,14 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
       }
 
       setQrPayload(res.qrPayload || `attendance://session/${sessionId}?token=QR-DYN-${Date.now()}`)
-      setQrCountdown(30)
+      
+      // Calculate exactly how many seconds are left in this backend window
+      if (res.qrExpiresAt) {
+        const remainingQr = Math.max(1, Math.floor((new Date(res.qrExpiresAt) - new Date()) / 1000))
+        setQrCountdown(remainingQr)
+      } else {
+        setQrCountdown(30)
+      }
     } catch (err) {
       setQrPayload(`attendance://session/${sessionId}?token=QR-DYN-${Math.floor(Date.now() / 30000)}`)
       setQrCountdown(30)

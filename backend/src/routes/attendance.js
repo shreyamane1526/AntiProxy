@@ -88,7 +88,7 @@ router.get('/teacher-assignments', authenticateToken, authorizeRoles('teacher', 
 // POST /api/attendance/sessions - Teacher starts a 5-minute session
 router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin', 'hod'), async (req, res) => {
   try {
-    const { classSectionId, classId, subjectId, room = 'Room 201', durationMinutes = 7, slotDay = null, slotHour = null } = req.body;
+    const { classSectionId, classId, subjectId, room = 'Room 201', durationMinutes = 5, slotDay = null, slotHour = null } = req.body;
     const teacherId = req.user.profileId || req.user.id;
 
     let targetClassId = classSectionId || classId || 'cls-cse-a';
@@ -328,6 +328,8 @@ router.get('/sessions/:id/qr', authenticateToken, async (req, res) => {
     // EXPIRED sessions (auto-ended by teacher starting new one) still produce valid QR tokens
     // until the token window expires. Only block if session is explicitly ENDED.
     const payloadData = QrService.generatePayload(session.id, session.session_secret || session.sessionSecret || 'defaultSecret');
+
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
 
     res.json({
       sessionId: session.id,
