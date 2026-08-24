@@ -4,9 +4,9 @@ import PageHeader from "../../components/PageHeader"
 import DataTable from "../../components/DataTable"
 import AttendanceProgress from "../../components/AttendanceProgress"
 import { AttendanceBadge } from "../../components/StatusBadge"
-import { teacherClasses } from "../../data/mockData"
 import { getAttendanceStatus } from "../../constants/attendance"
 import { percentage } from "../../utils/attendance"
+import { useAuth } from "../../context/AuthContext"
 import { api } from "../../utils/api"
 
 function withStats(student) {
@@ -20,10 +20,36 @@ function withStats(student) {
 }
 
 export default function TeacherAnalytics() {
+  const { user } = useAuth()
+  const [assignments, setAssignments] = useState([])
   const [classId, setClassId] = useState(null)
   const [classApiData, setClassApiData] = useState(null)
 
-  const selected = teacherClasses.find((item) => item.id === classId)
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await api.attendance.getTeacherAssignments()
+        if (res && res.assignments) {
+          const map = new Map()
+          res.assignments.forEach((a) => {
+            if (!map.has(a.class_id)) {
+              map.set(a.class_id, {
+                id: a.class_id,
+                name: a.subject_name,
+                code: a.subject_code,
+                division: a.class_division,
+                type: "Lecture",
+              })
+            }
+          })
+          setAssignments(Array.from(map.values()))
+        }
+      } catch (err) {
+        console.warn("Teacher assignments fetch error:", err.message)
+      }
+    }
+    load()
+  }, [user])
 
   useEffect(() => {
     if (classId) {
@@ -41,7 +67,9 @@ export default function TeacherAnalytics() {
     }
   }, [classId])
 
-  const rawStudents = classApiData?.students || (selected ? selected.students : [])
+  const selected = assignments.find((item) => item.id === classId)
+
+  const rawStudents = classApiData?.students || []
   const students = rawStudents.map(withStats)
 
   if (selected || classApiData) {
@@ -88,7 +116,7 @@ export default function TeacherAnalytics() {
     <div>
       <PageHeader title="Student Analytics" subtitle="Select a class to view live database attendance records." />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {teacherClasses.map((item) => (
+        {assignments.map((item) => (
           <button
             key={item.id}
             type="button"
@@ -100,12 +128,11 @@ export default function TeacherAnalytics() {
             <p className="mt-1 text-sm text-muted">
               {item.division} · {item.type}
             </p>
-            <p className="mt-4 inline-flex items-center gap-2 text-sm text-teal-dark font-medium">
-              <Users size={16} />
-              {item.students.length} enrolled students
-            </p>
           </button>
         ))}
+        {assignments.length === 0 && (
+          <p className="text-sm text-muted col-span-full">No class assignments found.</p>
+        )}
       </div>
     </div>
   )

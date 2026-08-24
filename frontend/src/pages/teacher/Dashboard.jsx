@@ -3,7 +3,6 @@ import { QRCodeSVG } from "qrcode.react"
 import PageHeader from "../../components/PageHeader"
 import Modal from "../../components/Modal"
 import TimetableView, { formatHour } from "../../components/TimetableView"
-import { teacherClasses, teacherTimetable } from "../../data/mockData"
 import { greetingForHour } from "../../utils/attendance"
 import { useAuth } from "../../context/AuthContext"
 import { api } from "../../utils/api"
@@ -11,12 +10,11 @@ import toast from "react-hot-toast"
 
 function lectureLabel(slot) {
   if (!slot) return null;
-  const cls = teacherClasses.find((item) => item.id === slot.classId);
   const dayStr = slot.day || slot.dayOfWeek || "Monday";
   const startH = Number(slot.startHour) || (slot.startTime ? parseInt(slot.startTime.split(":")[0], 10) : 9);
   const dur = Number(slot.duration) || 1;
-  const classId = slot.classId || slot.class_id || (cls ? cls.id : "cls-cse-a");
-  const subjectId = slot.subjectId || slot.subject_id || (cls ? cls.subjectId : "sub-cs301");
+  const classId = slot.classId || slot.class_id;
+  const subjectId = slot.subjectId || slot.subject_id;
 
   return {
     ...slot,
@@ -25,11 +23,11 @@ function lectureLabel(slot) {
     day: dayStr,
     startHour: startH,
     duration: dur,
-    subject: slot.subject || slot.subject_name || cls?.name || "Lecture",
-    code: slot.code || slot.subject_code || cls?.code || "CS301",
-    division: slot.division || slot.class_division || cls?.division || "CSE-A",
-    type: slot.type || cls?.type || "Lecture",
-    meta: slot.division || slot.class_division || cls?.division || "CSE-A",
+    subject: slot.subject || slot.subject_name || "Lecture",
+    code: slot.code || slot.subject_code || "CS000",
+    division: slot.division || slot.class_division || "N/A",
+    type: slot.type || "Lecture",
+    meta: slot.division || slot.class_division || "N/A",
     room: slot.room || "Room 201",
   };
 }
@@ -39,6 +37,7 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
   const [qrCountdown, setQrCountdown] = useState(30)
   const [sessionCountdown, setSessionCountdown] = useState(420) // 7 minutes (420s)
   const [status, setStatus] = useState("ACTIVE")
+  const [endSummary, setEndSummary] = useState(null)
 
   // Fetch 30-second QR Payload from backend
   const fetchQrPayload = useCallback(async () => {
@@ -57,11 +56,6 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
       }
       if (res.sessionExpiresAt) {
         const remaining = Math.max(0, Math.floor((new Date(res.sessionExpiresAt) - new Date()) / 1000))
-        if (remaining <= 0) {
-          setStatus("EXPIRED")
-          toast.error("Attendance session expired.")
-          return
-        }
         setSessionCountdown(remaining)
       }
 
@@ -83,15 +77,8 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
     if (status !== "ACTIVE") return
 
     const timer = setInterval(() => {
-      // 5-minute session countdown
-      setSessionCountdown((prevSecs) => {
-        if (prevSecs <= 1) {
-          setStatus("EXPIRED")
-          toast.error("Attendance session expired.")
-          return 0
-        }
-        return prevSecs - 1
-      })
+      // Session countdown - tick every second
+      setSessionCountdown((prev) => Math.max(0, prev - 1))
 
       // 30-second QR rotation countdown
       setQrCountdown((prevQr) => {
@@ -115,14 +102,17 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
   const handleEnd = async () => {
     try {
       if (sessionId) {
-        await api.attendance.endSession(sessionId)
+        const res = await api.attendance.endSession(sessionId)
+        if (res && res.summary) {
+          setEndSummary(res.summary)
+        }
       }
+      setStatus("ENDED")
+      toast.success("Attendance session ended.")
     } catch (err) {
-      // Ignore
+      console.error("Failed to end session:", err)
+      toast.error(err?.message || err?.data?.message || "Failed to end session on server.")
     }
-    setStatus("ENDED")
-    toast.success("Attendance session ended.")
-    if (onEndSession) onEndSession()
   }
 
   if (status === "EXPIRED") {
@@ -136,9 +126,39 @@ function DynamicQrDisplay({ sessionId, onEndSession }) {
 
   if (status === "ENDED") {
     return (
-      <div className="py-6 text-center space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <p className="text-base font-bold text-slate-800">Attendance session ended.</p>
-        <p className="text-xs text-slate-500">Session closed by teacher.</p>
+      <div className="py-6 space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+        <p className="text-base font-bold text-slate-800 text-center">Attendance session ended.</p>
+        {endSummary ? (
+          <div className="space-y-3">
+            <div className="flex justify-center gap-6 text-sm font-semibold">
+              <span className="text-green-700">Present: {endSummary.present}</span>
+              <span className="text-red-600">Absent: {endSummary.absent}</span>
+              <span className="text-navy">Total: {endSummary.total}</span>
+            </div>
+            {endSummary.presentStudents.length > 0 && (
+              <div>
+                <p className="text-xs font-bold uppercase text-green-700 mb-1">Present</p>
+                <div className="flex flex-wrap gap-1">
+                  {endSummary.presentStudents.map((s) => (
+                    <span key={s.student_id} className="inline-block rounded-full bg-green-100 text-green-800 text-xs px-2 py-0.5 font-medium">{s.student_name || s.roll_no || s.student_id}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {endSummary.absentStudents.length > 0 && (
+              <div>
+                <p className="text-xs font-bold uppercase text-red-600 mb-1">Absent</p>
+                <div className="flex flex-wrap gap-1">
+                  {endSummary.absentStudents.map((s) => (
+                    <span key={s.student_id} className="inline-block rounded-full bg-red-100 text-red-800 text-xs px-2 py-0.5 font-medium">{s.student_name || s.roll_no || s.student_id}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500 text-center">Session closed by teacher.</p>
+        )}
       </div>
     )
   }
@@ -228,7 +248,7 @@ export default function TeacherDashboard() {
   }, [profile, user])
 
   const availableClasses = useMemo(() => {
-    if (assignments.length === 0) return teacherClasses
+    if (assignments.length === 0) return []
     const map = new Map()
     assignments.forEach((a) => {
       if (!map.has(a.class_id)) {
@@ -266,10 +286,10 @@ export default function TeacherDashboard() {
     return Array.from(map.values())
   }, [assignments, selectedClassId])
 
-  const rawLectures = dbTimetable.length > 0 ? dbTimetable : teacherTimetable
+  const rawLectures = dbTimetable.length > 0 ? dbTimetable : []
   const lectures = useMemo(() => rawLectures.map(lectureLabel).filter(Boolean), [rawLectures])
 
-  const handleStartAttendance = async (classIdParam, subjectIdParam) => {
+  const handleStartAttendance = async (classIdParam, subjectIdParam, slotDayParam = null, slotHourParam = null) => {
     const classId = classIdParam || selectedClassId
     const subjectId = subjectIdParam || selectedSubjectId
 
@@ -277,6 +297,8 @@ export default function TeacherDashboard() {
       const res = await api.attendance.createSession({
         classSectionId: classId,
         subjectId: subjectId,
+        slotDay: slotDayParam,
+        slotHour: slotHourParam,
       })
       setActiveSessionId(res.sessionId || `sess-${Date.now()}`)
       setQrReady(true)
@@ -288,7 +310,7 @@ export default function TeacherDashboard() {
 
   const openLecture = async (slot) => {
     setSelectedSlot(slot);
-    await handleStartAttendance(slot.classId, slot.subjectId);
+    await handleStartAttendance(slot.classId, slot.subjectId, slot.day, slot.startHour);
   };
 
   return (
@@ -299,72 +321,20 @@ export default function TeacherDashboard() {
       />
 
       {/* Class & Subject Selector */}
-      <div className="rounded-xl border border-border bg-white p-5 shadow-sm space-y-4">
-        <h2 className="text-base font-bold text-navy">Classroom Attendance Session</h2>
+        <div className="rounded-xl border border-border bg-white p-5 shadow-sm space-y-4">
+          <h2 className="text-base font-bold text-navy">Classroom Attendance Session</h2>
+          <p className="text-sm text-muted">Click a timetable slot below to start attendance for that specific lecture.</p>
 
-        <div className="grid gap-4 sm:grid-cols-3 items-end">
-          <div>
-            <label className="block text-xs font-bold uppercase text-muted mb-1">
-              Select Class / Division
-            </label>
-            <select
-              value={selectedClassId}
-              onChange={(e) => {
-                const newClassId = e.target.value
-                setSelectedClassId(newClassId)
-                const matching = assignments.filter((a) => a.class_id === newClassId)
-                if (matching.length > 0) {
-                  setSelectedSubjectId(matching[0].subject_id)
-                }
-              }}
-              className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm font-semibold text-navy focus:border-teal focus:outline-none"
-            >
-              {availableClasses.map((cls) => (
-                <option key={cls.id} value={cls.id}>
-                  {cls.name || cls.division}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold uppercase text-muted mb-1">
-              Select Subject
-            </label>
-            <select
-              value={selectedSubjectId}
-              onChange={(e) => setSelectedSubjectId(e.target.value)}
-              className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm font-semibold text-navy focus:border-teal focus:outline-none"
-            >
-              {availableSubjects.map((sub) => (
-                <option key={sub.id} value={sub.id}>
-                  {sub.code} - {sub.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <button
-              type="button"
-              onClick={() => handleStartAttendance(selectedClassId, selectedSubjectId)}
-              className="w-full rounded-lg bg-teal px-4 py-2 text-sm font-bold text-white shadow transition hover:bg-teal-dark"
-            >
-              START ATTENDANCE
-            </button>
-          </div>
+          {/* Live Active Session Panel */}
+          {qrReady && activeSessionId ? (
+            <div className="pt-4 border-t border-border">
+              <DynamicQrDisplay
+                sessionId={activeSessionId}
+                onEndSession={() => setQrReady(false)}
+              />
+            </div>
+          ) : null}
         </div>
-
-        {/* Live Active Session Panel */}
-        {qrReady && activeSessionId ? (
-          <div className="pt-4 border-t border-border">
-            <DynamicQrDisplay
-              sessionId={activeSessionId}
-              onEndSession={() => setQrReady(false)}
-            />
-          </div>
-        ) : null}
-      </div>
 
       {/* Timetable Schedule Grid */}
       <TimetableView lectures={lectures} onLectureClick={openLecture} />
@@ -392,7 +362,7 @@ export default function TeacherDashboard() {
             {!qrReady ? (
               <button
                 type="button"
-                onClick={() => handleStartAttendance(selectedSlot.classId, selectedSlot.subjectId)}
+                onClick={() => handleStartAttendance(selectedSlot.classId, selectedSlot.subjectId, selectedSlot.day, selectedSlot.startHour)}
                 className="w-full rounded-lg bg-teal px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-dark transition-colors shadow-sm"
               >
                 START ATTENDANCE

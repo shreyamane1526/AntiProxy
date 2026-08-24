@@ -100,7 +100,10 @@ CREATE TABLE IF NOT EXISTS attendance_sessions (
   session_secret VARCHAR(255) NOT NULL,
   status VARCHAR(32) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'ENDED', 'EXPIRED', 'CLOSED', 'OPEN', 'active', 'ended', 'expired', 'closed', 'open')),
   started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-  expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+  expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  ended_at TIMESTAMP WITH TIME ZONE,
+  slot_day VARCHAR(20),
+  slot_hour INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS attendance_attempts (

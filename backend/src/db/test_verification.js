@@ -59,8 +59,8 @@ async function runVerification() {
   const expiresAt = new Date(startedAt.getTime() + 5 * 60 * 1000);
 
   await query(
-    `INSERT INTO attendance_sessions (id, session_code, teacher_id, class_id, subject_id, room, device_name, session_secret, status, started_at, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11);`,
+    `INSERT INTO attendance_sessions (id, session_code, teacher_id, class_id, subject_id, room, device_name, session_secret, status, started_at, expires_at, slot_day, slot_hour)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13);`,
     [
       sessionId,
       sessionCode,
@@ -73,6 +73,8 @@ async function runVerification() {
       'open',
       startedAt.toISOString(),
       expiresAt.toISOString(),
+      'Monday',
+      9,
     ]
   );
 

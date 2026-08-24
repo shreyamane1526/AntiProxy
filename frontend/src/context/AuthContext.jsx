@@ -7,7 +7,7 @@ const TOKEN_KEY = "attendix.token"
 
 function readStoredUser() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = sessionStorage.getItem(STORAGE_KEY) || localStorage.getItem(STORAGE_KEY)
     return raw ? JSON.parse(raw) : null
   } catch {
     return null
@@ -18,7 +18,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(readStoredUser)
   const [markedSessions, setMarkedSessions] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem("attendix.marked") || "[]")
+      return JSON.parse(sessionStorage.getItem("attendix.marked") || localStorage.getItem("attendix.marked") || "[]")
     } catch {
       return []
     }
@@ -26,16 +26,19 @@ export function AuthProvider({ children }) {
 
   // Sync token validation on mount
   useEffect(() => {
-    const token = localStorage.getItem(TOKEN_KEY)
+    const token = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY)
     if (token && !user) {
       api.auth.me()
         .then((res) => {
           if (res.user) {
             setUser(res.user)
+            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(res.user))
             localStorage.setItem(STORAGE_KEY, JSON.stringify(res.user))
           }
         })
         .catch(() => {
+          sessionStorage.removeItem(TOKEN_KEY)
+          sessionStorage.removeItem(STORAGE_KEY)
           localStorage.removeItem(TOKEN_KEY)
           localStorage.removeItem(STORAGE_KEY)
           setUser(null)
@@ -56,18 +59,21 @@ export function AuthProvider({ children }) {
             email: email.trim() || res.user.email,
             profile: res.profile,
           }
+          sessionStorage.setItem(TOKEN_KEY, res.access_token)
+          sessionStorage.setItem(STORAGE_KEY, JSON.stringify(authenticatedUser))
           localStorage.setItem(TOKEN_KEY, res.access_token)
           localStorage.setItem(STORAGE_KEY, JSON.stringify(authenticatedUser))
           setUser(authenticatedUser)
           return authenticatedUser
         } catch (err) {
-          // Strictly throw backend authentication errors. No mock fallback!
           console.error("Backend authentication error:", err.message)
           throw new Error(err.data?.message || err.message || "Invalid email or password")
         }
       },
       logout: () => {
         setUser(null)
+        sessionStorage.removeItem(STORAGE_KEY)
+        sessionStorage.removeItem(TOKEN_KEY)
         localStorage.removeItem(STORAGE_KEY)
         localStorage.removeItem(TOKEN_KEY)
         api.auth.logout().catch(() => {})

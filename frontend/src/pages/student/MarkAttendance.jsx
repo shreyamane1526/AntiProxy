@@ -39,11 +39,12 @@ export default function MarkAttendance() {
   const { profile, user, hasMarked, markSession, unmarkSession } = useAuth()
 
   /* ─── session state ─── */
-  const [activeSession, setActiveSession] = useState(mockSession)
+  const [activeSession, setActiveSession] = useState(null)
+  const [loadingSession, setLoadingSession] = useState(true)
   const [scannedSessionId, setScannedSessionId] = useState(querySessionId || "")
   const [scannedToken, setScannedToken] = useState("")
-  const effectiveSessionId = scannedSessionId || querySessionId || activeSession?.id || mockSession.id
-  const alreadyMarked = hasMarked(effectiveSessionId)
+  const effectiveSessionId = scannedSessionId || querySessionId || activeSession?.id || ""
+  const alreadyMarked = effectiveSessionId ? hasMarked(effectiveSessionId) : false
 
   /* ─── flow state ─── */
   const [step, setStep] = useState(alreadyMarked ? 4 : 1)
@@ -61,45 +62,53 @@ export default function MarkAttendance() {
   const fileInputRef = useRef(null)
   const verifyingRef = useRef(false)                        // guard against double-verify from rapid frames
 
-  /* ─── Load real session info ─── */
-  useEffect(() => {
-    async function fetchSessionInfo() {
-      const studentId = profile?.id || user?.profileId || user?.id
-      try {
-        if (querySessionId) {
-          const res = await api.attendance.getSession(querySessionId)
-          if (res?.session) {
-            setActiveSession({
-              id: res.session.id,
-              subject: res.session.subject_name || res.session.subjectId || "Active Lecture",
-              division: profile?.division || "CSE-B",
-              time: "Live Active Session",
-              deviceName: res.session.device_name || "BLE-CLASS-ROOM-001",
-              date: "Today",
-            })
-            setScannedSessionId(res.session.id)
-            return
-          }
-        }
-        const activeRes = await api.attendance.getActiveSessions(studentId)
-        if (activeRes?.sessions?.length > 0) {
-          const s = activeRes.sessions[0]
+  /* ─── Load real session info from backend ─── */
+  const fetchSessionInfo = useCallback(async () => {
+    setLoadingSession(true)
+    const studentId = profile?.id || user?.profileId || user?.id
+    try {
+      if (querySessionId) {
+        const res = await api.attendance.getSession(querySessionId)
+        if (res?.session) {
           setActiveSession({
-            id: s.id,
-            subject: s.subject_name ? `${s.subject_name} (${s.subject_code})` : "Active Subject",
-            division: s.class_division || profile?.division || "CSE-B",
+            id: res.session.id,
+            subject: res.session.subject_name || res.session.subjectId || "Active Lecture",
+            division: profile?.division || "CSE-B",
             time: "Live Active Session",
-            deviceName: s.device_name || "BLE-CLASS-ROOM-001",
+            deviceName: res.session.device_name || "BLE-CLASS-ROOM-001",
             date: "Today",
           })
-          setScannedSessionId(s.id)
+          setScannedSessionId(res.session.id)
+          setLoadingSession(false)
+          return
         }
-      } catch (err) {
-        console.warn("Could not fetch session details:", err.message)
       }
+      const activeRes = await api.attendance.getActiveSessions(studentId)
+      if (activeRes?.sessions?.length > 0) {
+        const s = activeRes.sessions[0]
+        setActiveSession({
+          id: s.id,
+          subject: s.subject_name ? `${s.subject_name} (${s.subject_code})` : "Active Subject",
+          division: s.class_division || profile?.division || "CSE-B",
+          time: "Live Active Session",
+          deviceName: s.device_name || "BLE-CLASS-ROOM-001",
+          date: "Today",
+        })
+        setScannedSessionId(s.id)
+      } else {
+        setActiveSession(null)
+      }
+    } catch (err) {
+      console.warn("Could not fetch session details:", err.message)
+      setActiveSession(null)
+    } finally {
+      setLoadingSession(false)
     }
-    fetchSessionInfo()
   }, [querySessionId, profile, user])
+
+  useEffect(() => {
+    fetchSessionInfo()
+  }, [fetchSessionInfo])
 
   useEffect(() => {
     if (alreadyMarked) setStep(4)
@@ -113,9 +122,11 @@ export default function MarkAttendance() {
     verifyingRef.current = true
     setQrState("verifying")
     setQrError(null)
+    console.log(`[FRONTEND QR] Sending sessionId=${sessionId}, token=${token}`)
 
     try {
       const res = await api.attendance.verifyQr(sessionId, token)
+      console.log(`[FRONTEND QR] Response:`, res)
 
       if (res.success && res.status === "QR_VERIFIED") {
         setScannedSessionId(sessionId)
@@ -163,12 +174,14 @@ export default function MarkAttendance() {
   const handleImageUpload = useCallback(async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+    if (verifyingRef.current) return
 
+    console.log(`[UPLOAD] File selected: ${file.name}, size=${file.size}`)
     setQrState("decoding")
     setQrError(null)
-    setQrCapturedImage(null)
 
     const result = await decodeQRFromImageFile(file)
+    console.log(`[UPLOAD] Decode result:`, result)
 
     if (result.error) {
       const msg = ERROR_MESSAGES[result.error] || "Could not read QR from image."
@@ -178,7 +191,9 @@ export default function MarkAttendance() {
       return
     }
 
-    // Show the uploaded image
+    console.log(`[UPLOAD] Decoded OK: sessionId=${result.sessionId}, token=${result.token}`)
+
+    // Show the uploaded image immediately
     const reader = new FileReader()
     reader.onload = (ev) => setQrCapturedImage(ev.target.result)
     reader.readAsDataURL(file)
@@ -193,9 +208,13 @@ export default function MarkAttendance() {
   const [manualInput, setManualInput] = useState("")
   const handleManualVerify = useCallback(() => {
     if (!manualInput.trim()) return
+    if (verifyingRef.current) return
+
+    console.log(`[MANUAL] Input: ${manualInput.trim()}`)
     setQrState("decoding")
     setQrError(null)
     const parsed = parseQRPayload(manualInput.trim())
+    console.log(`[MANUAL] Parsed:`, parsed)
     if (parsed.error) {
       const msg = ERROR_MESSAGES[parsed.error] || "Invalid QR payload format."
       setQrError({ status: parsed.error, message: msg })
@@ -298,11 +317,53 @@ export default function MarkAttendance() {
   /* ══════════════════════════════════════════════════════
      R E N D E R
      ══════════════════════════════════════════════════════ */
+  if (loadingSession) {
+    return (
+      <div className="mx-auto max-w-3xl py-12 text-center">
+        <LoaderCircle className="mx-auto animate-spin text-teal" size={32} />
+        <p className="mt-3 text-sm font-medium text-muted">Checking for active attendance sessions…</p>
+      </div>
+    )
+  }
+
+  if (!activeSession && step !== 4) {
+    return (
+      <div className="mx-auto max-w-3xl">
+        <h1 className="text-2xl font-bold text-navy">Attendance Session</h1>
+        <div className="mt-6 rounded-2xl border border-border bg-white p-10 text-center shadow-sm space-y-4">
+          <span className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-slate-100 text-slate-500">
+            <QrCode size={32} />
+          </span>
+          <h2 className="text-xl font-bold text-navy">No Active Attendance Session</h2>
+          <p className="mx-auto max-w-md text-sm text-muted">
+            There is no live attendance session currently running for your class. When your teacher starts attendance from their dashboard, it will appear here automatically.
+          </p>
+          <div className="pt-2 flex justify-center gap-3">
+            <button
+              type="button"
+              onClick={fetchSessionInfo}
+              className="rounded-lg bg-teal px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-dark shadow-sm"
+            >
+              Check Again
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/student/dashboard")}
+              className="rounded-lg border border-border px-5 py-2.5 text-sm font-semibold text-navy hover:border-teal"
+            >
+              Back to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="mx-auto max-w-3xl">
       <h1 className="text-2xl font-bold text-navy">Attendance Session</h1>
       <p className="mt-1 text-sm text-muted">
-        {activeSession.subject} · {activeSession.division} · {activeSession.time}
+        {activeSession?.subject} · {activeSession?.division} · {activeSession?.time}
       </p>
 
       {/* Step indicators */}

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import toast from "react-hot-toast"
-import { AlertTriangle, BookOpen, CalendarCheck2, Percent, QrCode, Sparkles } from "lucide-react"
+import { AlertTriangle, BookOpen, CalendarCheck2, Percent, Sparkles } from "lucide-react"
 import PageHeader from "../../components/PageHeader"
 import StatCard from "../../components/StatCard"
 import AttendanceProgress from "../../components/AttendanceProgress"
@@ -88,24 +88,28 @@ export default function StudentDashboard() {
   const status = analytics.overallPercent >= 80 ? "good" : analytics.overallPercent >= 75 ? "warning" : "risk"
 
   const handleLectureClick = (lecture) => {
-    // Check if there is an active session for this lecture's subject or code
     const matchedSession = activeSessions.find(
-      (s) =>
-        s.subject_id === lecture.subjectId ||
-        s.subject_name?.toLowerCase() === lecture.subject?.toLowerCase() ||
-        s.subject_code?.toLowerCase() === lecture.code?.toLowerCase()
+      (s) => {
+        const subjectMatch =
+          s.subject_id === lecture.subjectId ||
+          (s.subject_name && lecture.subject && s.subject_name.toLowerCase() === lecture.subject.toLowerCase()) ||
+          (s.subject_code && lecture.code && s.subject_code.toLowerCase() === lecture.code.toLowerCase())
+
+        if (!subjectMatch) return false
+
+        if (s.slot_day && s.slot_hour != null) {
+          return s.slot_day === lecture.day && Number(s.slot_hour) === Number(lecture.startHour)
+        }
+
+        return false
+      }
     )
 
     if (matchedSession) {
       toast.success(`Active session found for ${lecture.subject}! Directing to attendance...`)
       navigate(`/student/mark-attendance?sessionId=${matchedSession.id}`)
-    } else if (activeSessions.length > 0) {
-      const activeSess = activeSessions[0]
-      toast.info(`Lecture "${lecture.subject}" has no active session. Opening active session for ${activeSess.subject_name || "class"}!`)
-      navigate(`/student/mark-attendance?sessionId=${activeSess.id}`)
     } else {
-      toast.error(`No active attendance session currently started for ${lecture.subject}. Wait for teacher to start attendance.`)
-      navigate(`/student/mark-attendance`)
+      toast.error(`No active attendance session started for ${lecture.subject}. Wait for teacher to start attendance.`)
     }
   }
 
@@ -114,50 +118,25 @@ export default function StudentDashboard() {
       <PageHeader
         title={`${greetingForHour()}, ${name.split(" ")[0]} 👋`}
         subtitle="Here's your live database attendance overview."
-        action={
-          <button
-            type="button"
-            onClick={() => {
-              if (activeSessions.length > 0) {
-                navigate(`/student/mark-attendance?sessionId=${activeSessions[0].id}`)
-              } else {
-                navigate("/student/mark-attendance")
-              }
-            }}
-            className="rounded-lg bg-teal px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-teal-dark shadow-sm flex items-center gap-2"
-          >
-            <QrCode size={18} />
-            Mark Attendance
-          </button>
-        }
       />
 
       {/* Active Session Notification Banner */}
       {activeSessions.length > 0 && (
         <div className="mb-6 rounded-2xl border border-teal/30 bg-gradient-to-r from-teal/10 via-emerald-50 to-teal/5 p-4 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <span className="relative flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-teal"></span>
-              </span>
-              <div>
-                <p className="flex items-center gap-1.5 text-sm font-bold text-navy">
-                  <Sparkles size={16} className="text-teal-dark" />
-                  Live Attendance Session Active Now!
-                </p>
-                <p className="text-xs text-muted">
-                  {activeSessions[0].subject_name} ({activeSessions[0].subject_code}) · {activeSessions[0].teacher_name || "Teacher"} · Room {activeSessions[0].room || "Classroom"}
-                </p>
-              </div>
+          <div className="flex items-center gap-3">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-teal"></span>
+            </span>
+            <div>
+              <p className="flex items-center gap-1.5 text-sm font-bold text-navy">
+                <Sparkles size={16} className="text-teal-dark" />
+                Live Attendance Session Active Now!
+              </p>
+              <p className="text-xs text-muted">
+                {activeSessions[0].subject_name} ({activeSessions[0].subject_code}) · {activeSessions[0].teacher_name || "Teacher"} · Room {activeSessions[0].room || "Classroom"} · {activeSessions[0].slot_day || ""} {activeSessions[0].slot_hour != null ? `${activeSessions[0].slot_hour}:00` : ""}
+              </p>
             </div>
-            <button
-              type="button"
-              onClick={() => navigate(`/student/mark-attendance?sessionId=${activeSessions[0].id}`)}
-              className="rounded-lg bg-navy px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-dark shadow-sm"
-            >
-              Start Verification Flow →
-            </button>
           </div>
         </div>
       )}

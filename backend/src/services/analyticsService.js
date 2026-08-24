@@ -3,149 +3,308 @@ import { query, isPg, getMemoryDb } from '../db/db.js';
 export class AnalyticsService {
   static async getStudentAnalytics(studentId) {
     const memory = getMemoryDb();
-    let records = [];
-    let enrollmentsList = [];
-    let sessionsList = [];
 
     if (isPg()) {
-      const recRes = await query(
-        `SELECT ar.*, s.name as subject_name, s.code as subject_code 
-         FROM attendance_records ar
-         LEFT JOIN subjects s ON ar.subject_id = s.id
-         WHERE ar.student_id = $1;`,
-        [studentId]
-      );
-      records = recRes.rows;
+      const resolvedId = await query(`SELECT id FROM students WHERE id = $1 OR user_id = $1 LIMIT 1;`, [studentId]);
+      const sid = resolvedId.rows[0]?.id || studentId;
 
       const enrRes = await query(
-        `SELECT e.class_id, c.name as class_name, c.code as class_code 
-         FROM enrollments e 
-         JOIN classes c ON e.class_id = c.id 
+        `SELECT e.class_id, c.name as class_name, c.code as class_code,
+                sub.id as subject_id, sub.name as subject_name, sub.code as subject_code
+         FROM enrollments e
+         JOIN classes c ON e.class_id = c.id
+         JOIN teacher_subject_assignments tsa ON tsa.class_id = e.class_id
+         JOIN subjects sub ON tsa.subject_id = sub.id
          WHERE e.student_id = $1;`,
-        [studentId]
+        [sid]
       );
-      enrollmentsList = enrRes.rows;
+      const enrollments = enrRes.rows;
 
-      const sessRes = await query(`SELECT * FROM attendance_sessions;`);
-      sessionsList = sessRes.rows;
-    } else {
-      records = memory.attendance_records.filter((r) => r.student_id === studentId || r.studentId === studentId);
-      
-      const studentObj = memory.students.find((s) => s.id === studentId || s.user_id === studentId);
-      const actualStudentId = studentObj ? studentObj.id : studentId;
-      
-      const enrs = memory.enrollments.filter((e) => e.student_id === actualStudentId);
-      enrollmentsList = enrs.map((e) => {
-        const cls = memory.classes.find((c) => c.id === e.class_id);
-        return {
-          class_id: e.class_id,
-          class_name: cls ? cls.name : 'Class',
-          class_code: cls ? cls.code : 'CS000',
-        };
-      });
+      const sessRes = await query(
+        `SELECT id, class_id, subject_id, started_at, status FROM attendance_sessions WHERE status IN ('ENDED', 'EXPIRED');`
+      );
+      const sessions = sessRes.rows;
 
-      sessionsList = memory.attendance_sessions;
-    }
+      const recRes = await query(
+        `SELECT session_id, subject_id, status, timestamp FROM attendance_records WHERE student_id = $1;`,
+        [sid]
+      );
+      const records = recRes.rows;
 
-    // Default template fallback list
-    const subjectsMap = {
-      'class-dbms-b': { id: 'sub-dbms', code: 'CS301', name: 'DBMS', attended: 20, total: 22 },
-      'class-cn-b': { id: 'sub-cn', code: 'CS302', name: 'Computer Networks', attended: 18, total: 23 },
-      'class-daa-b': { id: 'sub-daa', code: 'CS303', name: 'DAA', attended: 16, total: 22 },
-      'class-os-b': { id: 'sub-os', code: 'CS304', name: 'Operating Systems', attended: 19, total: 22 },
-      'class-ai-b': { id: 'sub-ai', code: 'CS305', name: 'AI', attended: 17, total: 21 },
-    };
+      const subjectMap = new Map();
+      for (const enr of enrollments) {
+        const key = enr.subject_id;
+        if (!subjectMap.has(key)) {
+          subjectMap.set(key, {
+            id: enr.subject_id,
+            code: enr.subject_code,
+            name: enr.subject_name,
+            classId: enr.class_id,
+            attended: 0,
+            total: 0,
+          });
+        }
+      }
 
-    // Calculate dynamically based on enrollments and attendance records
-    const subjects = enrollmentsList.map((enr) => {
-      const base = subjectsMap[enr.class_id] || {
-        id: `sub-${enr.class_code.toLowerCase()}`,
-        code: enr.class_code,
-        name: enr.class_name,
-        attended: 0,
-        total: 0,
-      };
+      for (const sess of sessions) {
+        const sub = subjectMap.get(sess.subject_id);
+        if (sub) {
+          sub.total++;
+          const present = records.find((r) => r.session_id === sess.id && r.status === 'present');
+          if (present) sub.attended++;
+        }
+      }
 
-      // Count sessions for this class
-      const sessionsForClass = sessionsList.filter((s) => s.class_id === enr.class_id || s.class_section_id === enr.class_id);
-      
-      // Count student present records
-      const attendedCount = records.filter(
-        (r) => r.session_id && sessionsForClass.some((s) => s.id === r.session_id)
-      ).length;
+      const subjectWise = Array.from(subjectMap.values()).map((s) => ({
+        ...s,
+        percent: s.total > 0 ? Number(((s.attended / s.total) * 100).toFixed(1)) : 0,
+      }));
+
+      const totalAttended = subjectWise.reduce((sum, s) => sum + s.attended, 0);
+      const totalClasses = subjectWise.reduce((sum, s) => sum + s.total, 0);
+      const overallPercent = totalClasses > 0 ? Number(((totalAttended / totalClasses) * 100).toFixed(1)) : 0;
+
+      const weeklyTrend = await this._getWeeklyTrend(sid);
+      const monthlyTrend = await this._getMonthlyTrend(sid);
 
       return {
-        ...base,
-        // Add dynamic record counts to the base template data to show real-time progress
-        attended: base.attended + attendedCount,
-        total: base.total + sessionsForClass.length,
+        overallPercent,
+        totalAttended,
+        totalClasses,
+        subjectWise,
+        weeklyTrend,
+        monthlyTrend,
+        recentRecords: records.slice(0, 10),
       };
-    });
+    }
 
-    // Fallback if student has no enrollments in database
-    const finalSubjects = subjects.length > 0 ? subjects : Object.values(subjectsMap);
+    // Memory fallback
+    const studentObj = memory.students?.find((s) => s.id === studentId || s.user_id === studentId);
+    const sid = studentObj?.id || studentId;
+    const records = (memory.attendance_records || []).filter((r) => r.student_id === sid);
+    const enrs = (memory.enrollments || []).filter((e) => e.student_id === sid);
+    const sessions = memory.attendance_sessions || [];
 
-    const totalAttended = finalSubjects.reduce((sum, s) => sum + s.attended, 0);
-    const totalClasses = finalSubjects.reduce((sum, s) => sum + s.total, 0);
-    const overallPercent = totalClasses > 0 ? (totalAttended / totalClasses) * 100 : 82.5;
+    const subjectMap = new Map();
+    for (const e of enrs) {
+      const cls = memory.classes?.find((c) => c.id === e.class_id);
+      const tsa = (memory.teacher_subject_assignments || []).find((a) => a.class_id === e.class_id);
+      const sub = tsa ? memory.subjects?.find((s) => s.id === tsa.subject_id) : null;
+      if (sub && !subjectMap.has(sub.id)) {
+        subjectMap.set(sub.id, { id: sub.id, code: sub.code, name: sub.name, attended: 0, total: 0 });
+      }
+    }
+
+    for (const sess of sessions) {
+      const sub = subjectMap.get(sess.subject_id);
+      if (sub && ['ENDED', 'EXPIRED'].includes(sess.status)) {
+        sub.total++;
+        if (records.find((r) => r.session_id === sess.id && r.status === 'present')) sub.attended++;
+      }
+    }
+
+    const subjectWise = Array.from(subjectMap.values()).map((s) => ({
+      ...s,
+      percent: s.total > 0 ? Number(((s.attended / s.total) * 100).toFixed(1)) : 0,
+    }));
+
+    const totalAttended = subjectWise.reduce((sum, s) => sum + s.attended, 0);
+    const totalClasses = subjectWise.reduce((sum, s) => sum + s.total, 0);
 
     return {
-      overallPercent: Number(overallPercent.toFixed(1)),
+      overallPercent: totalClasses > 0 ? Number(((totalAttended / totalClasses) * 100).toFixed(1)) : 0,
       totalAttended,
       totalClasses,
-      subjectWise: finalSubjects,
-      weeklyTrend: [
-        { label: 'Week 1', attendance: 84 },
-        { label: 'Week 2', attendance: 86 },
-        { label: 'Week 3', attendance: 82 },
-        { label: 'Week 4', attendance: 79 },
-        { label: 'Week 5', attendance: 82 },
-        { label: 'Week 6', attendance: 81 },
-      ],
-      monthlyTrend: [
-        { label: 'Jan', attendance: 88 },
-        { label: 'Feb', attendance: 85 },
-        { label: 'Mar', attendance: 83 },
-        { label: 'Apr', attendance: 80 },
-        { label: 'May', attendance: 82 },
-      ],
+      subjectWise,
+      weeklyTrend: [],
+      monthlyTrend: [],
       recentRecords: records.slice(0, 10),
     };
   }
 
+  static async _getWeeklyTrend(studentId) {
+    if (!isPg()) return [];
+    const res = await query(
+      `SELECT 
+         TO_CHAR(DATE_TRUNC('week', ar.timestamp), 'YYYY-MM-DD') as week_start,
+         COUNT(CASE WHEN ar.status = 'present' THEN 1 END) as present_count,
+         COUNT(*) as total_count
+       FROM attendance_records ar
+       WHERE ar.student_id = $1
+       GROUP BY DATE_TRUNC('week', ar.timestamp)
+       ORDER BY week_start DESC
+       LIMIT 8;`,
+      [studentId]
+    );
+    return res.rows.map((r, i) => ({
+      label: `Week ${res.rows.length - i}`,
+      attendance: r.total_count > 0 ? Number(((r.present_count / r.total_count) * 100).toFixed(1)) : 0,
+    })).reverse();
+  }
+
+  static async _getMonthlyTrend(studentId) {
+    if (!isPg()) return [];
+    const res = await query(
+      `SELECT 
+         TO_CHAR(DATE_TRUNC('month', ar.timestamp), 'YYYY-MM') as month_key,
+         TO_CHAR(DATE_TRUNC('month', ar.timestamp), 'Mon') as label,
+         COUNT(CASE WHEN ar.status = 'present' THEN 1 END) as present_count,
+         COUNT(*) as total_count
+       FROM attendance_records ar
+       WHERE ar.student_id = $1
+       GROUP BY DATE_TRUNC('month', ar.timestamp)
+       ORDER BY month_key DESC
+       LIMIT 12;`,
+      [studentId]
+    );
+    return res.rows.map((r) => ({
+      label: r.label,
+      attendance: r.total_count > 0 ? Number(((r.present_count / r.total_count) * 100).toFixed(1)) : 0,
+    })).reverse();
+  }
+
   static async getClassAnalytics(classId) {
+    const memory = getMemoryDb();
+
+    if (isPg()) {
+      const classRes = await query(`SELECT id, name, code, division FROM classes WHERE id = $1;`, [classId]);
+      const classInfo = classRes.rows[0] || { id: classId, name: 'Class', code: 'CS000', division: 'N/A' };
+
+      const studentsRes = await query(
+        `SELECT 
+           s.id, u.name, s.roll_no,
+           COUNT(CASE WHEN ar.status = 'present' THEN 1 END) as present_count,
+           COUNT(DISTINCT asess.id) as total_sessions
+         FROM enrollments e
+         JOIN students s ON e.student_id = s.id
+         JOIN users u ON s.user_id = u.id
+         LEFT JOIN attendance_sessions asess ON asess.class_id = e.class_id AND asess.status IN ('ENDED', 'EXPIRED')
+         LEFT JOIN attendance_records ar ON ar.student_id = s.id AND ar.session_id = asess.id
+         WHERE e.class_id = $1
+         GROUP BY s.id, u.name, s.roll_no
+         ORDER BY s.roll_no;`,
+        [classId]
+      );
+
+      const students = studentsRes.rows.map((s) => {
+        const total = Number(s.total_sessions) || 0;
+        const present = Number(s.present_count) || 0;
+        const pct = total > 0 ? Number(((present / total) * 100).toFixed(1)) : 0;
+        return {
+          id: s.id,
+          name: s.name,
+          rollNo: s.roll_no,
+          present,
+          total,
+          percent: pct,
+          risk: pct < 60 ? 'CRITICAL' : pct < 75 ? 'HIGH' : pct < 85 ? 'MEDIUM' : 'LOW',
+        };
+      });
+
+      const totalStudents = students.length;
+      const avgPct = totalStudents > 0
+        ? Number((students.reduce((sum, s) => sum + s.percent, 0) / totalStudents).toFixed(1))
+        : 0;
+      const defaulterCount = students.filter((s) => s.percent < 75).length;
+
+      return {
+        classId,
+        className: `${classInfo.name} · ${classInfo.division}`,
+        averageAttendance: avgPct,
+        totalStudents,
+        defaulterCount,
+        students,
+      };
+    }
+
+    const cls = memory.classes?.find((c) => c.id === classId);
+    const enrolled = memory.enrollments?.filter((e) => e.class_id === classId) || [];
+    const sessions = memory.attendance_sessions?.filter((s) => s.class_id === classId && ['ENDED', 'EXPIRED'].includes(s.status)) || [];
+    const records = memory.attendance_records || [];
+
+    const students = enrolled.map((e) => {
+      const stu = memory.students?.find((s) => s.id === e.student_id);
+      const user = stu ? memory.users?.find((u) => u.id === stu.user_id) : null;
+      const presentCount = records.filter((r) => r.student_id === e.student_id && r.status === 'present' && sessions.some((s) => s.id === r.session_id)).length;
+      const total = sessions.length;
+      const pct = total > 0 ? Number(((presentCount / total) * 100).toFixed(1)) : 0;
+      return {
+        id: e.student_id,
+        name: user?.name || 'Student',
+        rollNo: stu?.roll_no || e.student_id,
+        present: presentCount,
+        total,
+        percent: pct,
+        risk: pct < 60 ? 'CRITICAL' : pct < 75 ? 'HIGH' : pct < 85 ? 'MEDIUM' : 'LOW',
+      };
+    });
+
     return {
-      classId: classId || 'class-dbms-b',
-      className: 'DBMS · CSE-B',
-      averageAttendance: 81.4,
-      totalStudents: 8,
-      defaulterCount: 2,
-      students: [
-        { id: 's1', name: 'Aanya Sharma', rollNo: '21CSB042', present: 20, total: 22, percent: 90.9, risk: 'LOW' },
-        { id: 's2', name: 'Rohan Patel', rollNo: '21CSB018', present: 16, total: 22, percent: 72.7, risk: 'HIGH' },
-        { id: 's3', name: 'Meera Joshi', rollNo: '21CSB031', present: 21, total: 22, percent: 95.5, risk: 'LOW' },
-        { id: 's4', name: 'Kabir Singh', rollNo: '21CSB007', present: 14, total: 22, percent: 63.6, risk: 'CRITICAL' },
-        { id: 's5', name: 'Ishita Rao', rollNo: '21CSB055', present: 19, total: 22, percent: 86.4, risk: 'LOW' },
-        { id: 's6', name: 'Dev Malhotra', rollNo: '21CSB012', present: 17, total: 22, percent: 77.3, risk: 'MEDIUM' },
-        { id: 's7', name: 'Sana Qureshi', rollNo: '21CSB028', present: 13, total: 22, percent: 59.1, risk: 'CRITICAL' },
-        { id: 's8', name: 'Arjun Menon', rollNo: '21CSB041', present: 18, total: 22, percent: 81.8, risk: 'LOW' },
-      ],
+      classId,
+      className: `${cls?.name || 'Class'} · ${cls?.division || 'N/A'}`,
+      averageAttendance: students.length > 0 ? Number((students.reduce((s, st) => s + st.percent, 0) / students.length).toFixed(1)) : 0,
+      totalStudents: students.length,
+      defaulterCount: students.filter((s) => s.percent < 75).length,
+      students,
     };
   }
 
   static async getDepartmentAnalytics(deptId) {
+    if (isPg()) {
+      const deptRes = await query(`SELECT id, name, code FROM departments WHERE id = $1;`, [deptId]);
+      const dept = deptRes.rows[0] || { id: deptId, name: 'Department', code: 'DEPT' };
+
+      const classRes = await query(
+        `SELECT c.id, c.name, c.code, c.division,
+           (SELECT COUNT(*) FROM enrollments e WHERE e.class_id = c.id) as total_students,
+           (SELECT COUNT(DISTINCT asess.id) FROM attendance_sessions asess WHERE asess.class_id = c.id AND asess.status IN ('ENDED', 'EXPIRED')) as total_sessions,
+           (SELECT COUNT(*) FROM attendance_records ar
+            JOIN attendance_sessions asess2 ON ar.session_id = asess2.id
+            WHERE asess2.class_id = c.id AND ar.status = 'present') as total_present
+         FROM classes c
+         WHERE c.department_id = $1
+         ORDER BY c.division;`,
+        [deptId]
+      );
+
+      const divisions = classRes.rows.map((c) => {
+        const total = Number(c.total_sessions) || 0;
+        const present = Number(c.total_present) || 0;
+        const students = Number(c.total_students) || 0;
+        const totalPossible = students * total;
+        const avg = totalPossible > 0 ? Number(((present / totalPossible) * 100).toFixed(1)) : 0;
+        return {
+          division: c.division,
+          classId: c.id,
+          className: c.name,
+          average: avg,
+          total: students,
+          atRisk: 0,
+        };
+      });
+
+      const totalStudents = divisions.reduce((sum, d) => sum + d.total, 0);
+      const overallAverage = totalStudents > 0
+        ? Number((divisions.reduce((sum, d) => sum + d.average * d.total, 0) / totalStudents).toFixed(1))
+        : 0;
+
+      return {
+        department: dept.name,
+        overallAverage,
+        totalDivisions: divisions.length,
+        totalStudents,
+        atRiskCount: 0,
+        divisions,
+      };
+    }
+
     return {
-      department: 'Computer Science & Engineering',
-      overallAverage: 82.3,
-      totalDivisions: 4,
-      totalStudents: 180,
-      atRiskCount: 14,
-      divisions: [
-        { division: 'CSE-A', average: 84.1, total: 45, atRisk: 3 },
-        { division: 'CSE-B', average: 81.4, total: 45, atRisk: 5 },
-        { division: 'CSE-C', average: 83.0, total: 45, atRisk: 2 },
-        { division: 'CSE-D', average: 80.8, total: 45, atRisk: 4 },
-      ],
+      department: 'Department',
+      overallAverage: 0,
+      totalDivisions: 0,
+      totalStudents: 0,
+      atRiskCount: 0,
+      divisions: [],
     };
   }
 }

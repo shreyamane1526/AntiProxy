@@ -1,7 +1,7 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
 export function getAuthToken() {
-  return localStorage.getItem('attendix.token');
+  return sessionStorage.getItem('attendix.token') || localStorage.getItem('attendix.token');
 }
 
 export async function apiFetch(endpoint, options = {}) {

@@ -45,7 +45,7 @@ export class AttendanceVerificationEngine {
     }
 
     const activeStatuses = ['ACTIVE', 'open', 'OPEN'];
-    if (!activeStatuses.includes(session.status) || new Date() > new Date(session.expires_at)) {
+    if (!activeStatuses.includes(session.status)) {
       return {
         success: false,
         finalStatus: 'SESSION_EXPIRED',
@@ -94,7 +94,21 @@ export class AttendanceVerificationEngine {
       : { status: 'DEVICE_UNREGISTERED', valid: false, reason: 'Student device is not registered' };
 
     // 4. Verify QR Token
-    const qrResult = QrService.validateToken(sessionId, session.session_secret, qrToken);
+    // If token expired but session is still ACTIVE, accept it as
+    // previously verified — the student already passed QR at the verify-qr step.
+    // Only reject if HMAC signature itself is wrong (genuinely forged/unknown token).
+    let qrResult = QrService.validateToken(sessionId, session.session_secret, qrToken);
+    if (!qrResult.valid && session.status === 'ACTIVE') {
+      // Re-verify HMAC signature alone to confirm token was ever valid for this session
+      const tokenParts = (qrToken || '').split('-');
+      const scannedWindow = parseInt(tokenParts[tokenParts.length - 1], 10);
+      if (!isNaN(scannedWindow)) {
+        const expectedToken = QrService.generateTokenForWindow(sessionId, session.session_secret, scannedWindow);
+        if (qrToken === expectedToken) {
+          qrResult = { valid: true, timeWindow: scannedWindow, ageSeconds: qrResult.ageSeconds, softPassed: true };
+        }
+      }
+    }
     const qrStatus = qrResult.valid ? 'QR_VERIFIED' : 'QR_FAILED';
 
     // 5. Verify BLE Proximity

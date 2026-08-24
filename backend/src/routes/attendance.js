@@ -21,6 +21,8 @@ function formatSession(session) {
     startedAt: session.started_at || session.startedAt,
     expiresAt: session.expires_at || session.expiresAt,
     endedAt: session.ended_at || session.endedAt || null,
+    slotDay: session.slot_day || session.slotDay || null,
+    slotHour: session.slot_hour || session.slotHour || null,
     status: session.status || 'ACTIVE',
     sessionSecret: session.session_secret || session.sessionSecret,
     createdAt: session.created_at || session.createdAt,
@@ -86,7 +88,7 @@ router.get('/teacher-assignments', authenticateToken, authorizeRoles('teacher', 
 // POST /api/attendance/sessions - Teacher starts a 5-minute session
 router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin', 'hod'), async (req, res) => {
   try {
-    const { classSectionId, classId, subjectId, room = 'Room 201', durationMinutes = 7 } = req.body;
+    const { classSectionId, classId, subjectId, room = 'Room 201', durationMinutes = 7, slotDay = null, slotHour = null } = req.body;
     const teacherId = req.user.profileId || req.user.id;
 
     let targetClassId = classSectionId || classId || 'cls-cse-a';
@@ -155,6 +157,19 @@ router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin', '
       }
     }
 
+    // Auto-end any previously active sessions for this teacher before starting new one
+    const autoEndTime = new Date().toISOString();
+    if (isPg()) {
+      await query(
+        `UPDATE attendance_sessions SET status = 'EXPIRED', ended_at = $2 WHERE teacher_id = $1 AND status IN ('ACTIVE', 'open', 'OPEN');`,
+        [resolvedTeacherId, autoEndTime]
+      );
+    } else {
+      memory.attendance_sessions
+        .filter((s) => s.teacher_id === teacherId && ['ACTIVE', 'open', 'OPEN'].includes(s.status))
+        .forEach((s) => { s.status = 'EXPIRED'; s.ended_at = autoEndTime; });
+    }
+
     const sessionId = `sess-${Date.now()}`;
     const sessionCode = `CODE-${Math.floor(1000 + Math.random() * 9000)}`;
     const sessionSecret = crypto.randomBytes(16).toString('hex');
@@ -178,12 +193,14 @@ router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin', '
       ended_at: null,
       created_at: startedAt.toISOString(),
       updated_at: startedAt.toISOString(),
+      slot_day: slotDay,
+      slot_hour: slotHour != null ? Number(slotHour) : null,
     };
 
 
     if (isPg()) {
       await query(
-        `INSERT INTO attendance_sessions (id, session_code, teacher_id, class_id, subject_id, room, device_name, session_secret, status, started_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11);`,
+        `INSERT INTO attendance_sessions (id, session_code, teacher_id, class_id, subject_id, room, device_name, session_secret, status, started_at, expires_at, slot_day, slot_hour) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13);`,
         [
           sessionObj.id,
           sessionObj.session_code,
@@ -196,6 +213,8 @@ router.post('/sessions', authenticateToken, authorizeRoles('teacher', 'admin', '
           sessionObj.status,
           sessionObj.started_at,
           sessionObj.expires_at,
+          sessionObj.slot_day,
+          sessionObj.slot_hour,
         ]
       );
     } else {
@@ -295,24 +314,6 @@ router.get('/sessions/:id/qr', authenticateToken, async (req, res) => {
     if (!session) return res.status(404).json({ error: 'SESSION_NOT_FOUND' });
 
     const serverTime = new Date();
-    const expiresAtDate = new Date(session.expires_at || session.expiresAt);
-
-    // Auto-expire check
-    if (session.status === 'EXPIRED' || serverTime > expiresAtDate) {
-      if (session.status === 'ACTIVE' || session.status === 'open') {
-        session.status = 'EXPIRED';
-        if (isPg()) {
-          await query(`UPDATE attendance_sessions SET status = 'EXPIRED' WHERE id = $1;`, [sessionId]);
-        }
-      }
-      return res.status(410).json({
-        error: 'SESSION_EXPIRED',
-        sessionId: session.id,
-        status: 'EXPIRED',
-        message: 'Attendance session has expired',
-        serverTime: serverTime.toISOString(),
-      });
-    }
 
     if (session.status === 'ENDED' || session.status === 'closed') {
       return res.status(400).json({
@@ -324,6 +325,8 @@ router.get('/sessions/:id/qr', authenticateToken, async (req, res) => {
       });
     }
 
+    // EXPIRED sessions (auto-ended by teacher starting new one) still produce valid QR tokens
+    // until the token window expires. Only block if session is explicitly ENDED.
     const payloadData = QrService.generatePayload(session.id, session.session_secret || session.sessionSecret || 'defaultSecret');
 
     res.json({
@@ -334,7 +337,7 @@ router.get('/sessions/:id/qr', authenticateToken, async (req, res) => {
       expiresAt: payloadData.expiresAt,
       sessionExpiresAt: session.expires_at || session.expiresAt,
       serverTime: serverTime.toISOString(),
-      status: session.status,
+      status: session.status === 'EXPIRED' ? 'ACTIVE' : session.status,
     });
   } catch (err) {
     res.status(500).json({ error: 'QR_GENERATE_FAILED', message: err.message });
@@ -347,15 +350,106 @@ router.post('/sessions/:id/end', authenticateToken, authorizeRoles('teacher', 'a
     const sessionId = req.params.id;
     const memory = getMemoryDb();
     const now = new Date().toISOString();
+    console.log(`[END SESSION] Request to end session: ${sessionId} by user:`, req.user);
 
     if (isPg()) {
-      await query(`UPDATE attendance_sessions SET status = 'ENDED' WHERE id = $1;`, [sessionId]);
+      // Step 1: End the target session — this MUST succeed
+      const endResult = await query(
+        `UPDATE attendance_sessions SET status = 'ENDED', ended_at = $2 WHERE id = $1 AND status NOT IN ('ENDED', 'CLOSED');`,
+        [sessionId, now]
+      );
+      console.log(`[END SESSION] Target session ${sessionId}: rows affected = ${endResult.rowCount}`);
+
+      if (endResult.rowCount === 0) {
+        // Session may already be ended or doesn't exist — verify
+        const check = await query(`SELECT id, status FROM attendance_sessions WHERE id = $1;`, [sessionId]);
+        if (check.rows.length === 0) {
+          return res.status(404).json({ success: false, error: 'SESSION_NOT_FOUND', message: `Session ${sessionId} not found in database.` });
+        }
+        // Already ended — still return success with current state
+        console.log(`[END SESSION] Session ${sessionId} already in status: ${check.rows[0].status}`);
+      }
+
+      // Step 2: Expire all other active sessions for this teacher (best-effort, don't fail if this errors)
+      try {
+        const teacherId = req.user.profileId || req.user.id;
+        const expireResult = await query(
+          `UPDATE attendance_sessions SET status = 'EXPIRED', ended_at = $2
+           WHERE id != $1 AND status IN ('ACTIVE', 'open', 'OPEN')
+           AND teacher_id IN (SELECT id FROM teachers WHERE id = $3 OR user_id = $3);`,
+          [sessionId, now, teacherId]
+        );
+        console.log(`[END SESSION] Expired other sessions: rows affected = ${expireResult.rowCount}`);
+      } catch (expireErr) {
+        console.error(`[END SESSION] Failed to expire other sessions (non-fatal):`, expireErr.message);
+      }
     } else {
       const s = memory.attendance_sessions.find((sess) => sess.id === sessionId);
       if (s) {
         s.status = 'ENDED';
         s.ended_at = now;
-        s.updated_at = now;
+      }
+      // Expire others in memory
+      memory.attendance_sessions
+        .filter((sess) => sess.id !== sessionId && ['ACTIVE', 'open', 'OPEN'].includes(sess.status))
+        .forEach((sess) => { sess.status = 'EXPIRED'; sess.ended_at = now; });
+    }
+
+    // Fetch attendance summary for this session
+    let presentStudents = [];
+    let absentStudents = [];
+
+    if (isPg()) {
+      try {
+        const presentRes = await query(
+          `SELECT ar.student_id, u.name as student_name, s.roll_no, s.division
+           FROM attendance_records ar
+           JOIN students s ON ar.student_id = s.id
+           JOIN users u ON s.user_id = u.id
+           WHERE ar.session_id = $1 AND ar.status = 'present';`,
+          [sessionId]
+        );
+        presentStudents = presentRes.rows;
+      } catch (e) {
+        console.error('[END SESSION] Failed to fetch present students:', e.message);
+      }
+
+      try {
+        const absentRes = await query(
+          `SELECT e.student_id, u.name as student_name, s.roll_no, s.division
+           FROM enrollments e
+           JOIN students s ON e.student_id = s.id
+           JOIN users u ON s.user_id = u.id
+           WHERE e.class_id = (SELECT class_id FROM attendance_sessions WHERE id = $1)
+           AND e.student_id NOT IN (
+             SELECT student_id FROM attendance_records WHERE session_id = $1
+           );`,
+          [sessionId]
+        );
+        absentStudents = absentRes.rows;
+      } catch (e) {
+        console.error('[END SESSION] Failed to fetch absent students:', e.message);
+      }
+    } else {
+      const records = memory.attendance_records.filter((r) => r.session_id === sessionId && r.status === 'present');
+      presentStudents = records.map((r) => ({ student_id: r.student_id }));
+
+      const session = memory.attendance_sessions.find((s) => s.id === sessionId);
+      if (session) {
+        const enrolled = memory.enrollments.filter((e) => e.class_id === session.class_id);
+        absentStudents = enrolled
+          .filter((e) => !records.find((r) => r.student_id === e.student_id))
+          .map((e) => ({ student_id: e.student_id }));
+      }
+    }
+
+    console.log(`[END SESSION] Session ${sessionId} ended successfully. Present: ${presentStudents.length}, Absent: ${absentStudents.length}`);
+
+    // Verify the DB actually updated
+    if (isPg()) {
+      const verify = await query(`SELECT status, ended_at FROM attendance_sessions WHERE id = $1;`, [sessionId]);
+      if (verify.rows.length > 0) {
+        console.log(`[END SESSION] VERIFICATION - Session ${sessionId} DB status: ${verify.rows[0].status}, ended_at: ${verify.rows[0].ended_at}`);
       }
     }
 
@@ -365,6 +459,13 @@ router.post('/sessions/:id/end', authenticateToken, authorizeRoles('teacher', 'a
       status: 'ENDED',
       endedAt: now,
       message: 'Attendance session ended',
+      summary: {
+        total: presentStudents.length + absentStudents.length,
+        present: presentStudents.length,
+        absent: absentStudents.length,
+        presentStudents,
+        absentStudents,
+      },
     });
   } catch (err) {
     res.status(500).json({ error: 'SESSION_END_FAILED', message: err.message });
@@ -423,19 +524,16 @@ router.post('/verify-qr', authenticateToken, async (req, res) => {
     className = session.class_division || session.class_name || 'CSE-A';
 
     const serverTime = new Date();
-    const expiresAtDate = new Date(session.expires_at || session.expiresAt);
 
-    // 1. Session Status & Expiry Check
-    if (session.status === 'EXPIRED' || serverTime > expiresAtDate) {
-      return res.status(400).json({ success: false, status: 'SESSION_EXPIRED', message: 'Attendance session has expired.' });
-    }
-
+    // 1. Session Status Check
     if (session.status === 'ENDED' || session.status === 'closed') {
       return res.status(400).json({ success: false, status: 'SESSION_CLOSED', message: 'Attendance session closed by teacher.' });
     }
 
     // 2. Dynamic QR Token Window Check
+    console.log(`[VERIFY-QR] sessionId=${sessionId}, rawToken=${rawToken}, session_secret=${session.session_secret}`);
     const validation = QrService.validateToken(sessionId, session.session_secret || 'defaultSecret', rawToken);
+    console.log(`[VERIFY-QR] validation result:`, JSON.stringify(validation));
     if (!validation.valid) {
       if (validation.reason === 'QR_EXPIRED_OR_INVALID') {
         return res.status(400).json({ success: false, status: 'QR_EXPIRED', message: 'QR code token expired for 30s window.' });
@@ -639,6 +737,7 @@ router.get('/active-sessions', authenticateToken, async (req, res) => {
         `SELECT 
            s.id, s.session_code, s.teacher_id, s.class_id, s.subject_id,
            s.room, s.device_name, s.status, s.started_at, s.expires_at,
+           s.slot_day, s.slot_hour,
            sub.name as subject_name, sub.code as subject_code,
            c.name as class_name, c.division as class_division,
            u.name as teacher_name
@@ -648,7 +747,6 @@ router.get('/active-sessions', authenticateToken, async (req, res) => {
          JOIN teachers t ON s.teacher_id = t.id
          JOIN users u ON t.user_id = u.id
          WHERE s.status IN ('ACTIVE', 'open', 'OPEN')
-           AND s.expires_at > NOW()
            AND s.class_id IN (
              SELECT e.class_id FROM enrollments e
              JOIN students st ON e.student_id = st.id
@@ -666,7 +764,6 @@ router.get('/active-sessions', authenticateToken, async (req, res) => {
           .map((e) => e.class_id);
         sessions = memory.attendance_sessions.filter(
           (s) => ['ACTIVE', 'open', 'OPEN'].includes(s.status) &&
-            new Date(s.expires_at) > new Date() &&
             enrolledClassIds.includes(s.class_id)
         );
       }
