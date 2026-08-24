@@ -225,6 +225,7 @@ export class AttendanceVerificationEngine {
     return {
       success: allPassed,
       finalStatus,
+      faceStatus: faceResult.status,
       attemptId,
       recordId,
       details: {
@@ -233,6 +234,7 @@ export class AttendanceVerificationEngine {
         ble: bleResult.status,
         liveness: faceResult.livenessStatus || 'FAILED',
         faceMatch: faceResult.matchStatus || 'FAILED',
+        faceConfidence: faceResult.confidence ?? null,
       },
       failureReason,
     };

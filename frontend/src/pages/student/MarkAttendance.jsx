@@ -74,6 +74,7 @@ export default function MarkAttendance() {
   const [liveEmbedding, setLiveEmbedding] = useState(null)
   const [livenessVerified, setLivenessVerified] = useState(false)
   const [faceError, setFaceError] = useState(null)
+  const [faceNotRegistered, setFaceNotRegistered] = useState(false)
 
   // Preload face models
   useEffect(() => {
@@ -409,6 +410,7 @@ export default function MarkAttendance() {
 
     setVerifying(true)
     setVerificationError(null)
+    setFaceNotRegistered(false)
     try {
       const res = await api.attendance.mark({
         sessionId: sid,
@@ -416,9 +418,9 @@ export default function MarkAttendance() {
         deviceIdentifier: profile?.registeredDevice || "BLE-4421-DEV-001",
         bleRssi: -65,
         bleSupported: true,
-        faceImageData: facePhoto || "data:image/jpeg;base64,sample",
+        faceImageData: facePhoto,
         liveEmbedding,
-        livenessVerified: true,
+        livenessVerified,
       })
       if (res.success) {
         markSession(sid)
@@ -427,11 +429,14 @@ export default function MarkAttendance() {
       } else {
         const msg = res.failureReason || "Verification engine rejected request"
         setVerificationError(msg)
+        setFaceNotRegistered(res.faceStatus === "FACE_NOT_REGISTERED")
         toast.error(`Verification Failed: ${msg}`)
       }
     } catch (err) {
-      const msg = err.data?.failureReason || err.data?.message || err.message || "Verification failed"
+      const data = err.data || {}
+      const msg = data.failureReason || data.message || err.message || "Verification failed"
       setVerificationError(msg)
+      setFaceNotRegistered(data.faceStatus === "FACE_NOT_REGISTERED")
       toast.error(`Verification Error: ${msg}`)
     } finally {
       setVerifying(false)
@@ -447,6 +452,7 @@ export default function MarkAttendance() {
     setLivenessVerified(false)
     setFaceState("aligning")
     setFaceError(null)
+    setFaceNotRegistered(false)
     setVerificationError(null)
     setQrState("idle")
     setQrVerifiedInfo(null)
@@ -465,11 +471,8 @@ export default function MarkAttendance() {
     setLivenessVerified(false)
     setFaceState("aligning")
     setFaceError(null)
+    setFaceNotRegistered(false)
     setVerificationError(null)
-  }
-    setManualInput("")
-    setStep(1)
-    toast.success("Session reset.")
   }
 
   const resetQrStep = () => {
@@ -840,14 +843,17 @@ export default function MarkAttendance() {
                     <p className="text-sm font-bold text-red-700">Verification Engine Error</p>
                     <p className="mt-1 text-xs text-red-600">{verificationError}</p>
 
-                    {verificationError.toLowerCase().includes("register") && (
-                      <div className="mt-3">
+                    {faceNotRegistered && (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-xs text-red-600">
+                          You must register your face profile before marking attendance.
+                        </p>
                         <button
                           type="button"
                           onClick={() => navigate("/student/face-registration")}
                           className="inline-flex items-center gap-1.5 rounded-lg bg-teal px-4 py-2 text-xs font-bold text-white shadow hover:bg-teal-dark cursor-pointer"
                         >
-                          <Fingerprint size={14} /> Register Face Profile Now <ArrowRight size={14} />
+                          <Fingerprint size={14} /> Go to Face Registration <ArrowRight size={14} />
                         </button>
                       </div>
                     )}

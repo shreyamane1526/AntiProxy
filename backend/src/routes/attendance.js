@@ -651,8 +651,9 @@ router.post('/verify-ble', authenticateToken, async (req, res) => {
 
 // Step 11: POST /api/attendance/verify-liveness
 router.post('/verify-liveness', authenticateToken, async (req, res) => {
-  const { faceImageData } = req.body;
-  const result = FaceService.verifyFaceLiveness({ faceImageData });
+  const studentId = req.user.profileId || req.user.id;
+  const { liveEmbedding, livenessVerified } = req.body;
+  const result = await FaceService.verifyFaceLiveness({ studentId, liveEmbedding, livenessVerified });
   res.json(result);
 });
 

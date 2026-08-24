@@ -245,6 +245,7 @@ export default function FaceRegistration() {
         toast.success("Face profile successfully registered!")
         setStep("success")
         setExistingProfile(response.profile)
+        setTimeout(() => navigate("/student/dashboard"), 2500)
       } else {
         handleFailure("api", response?.message || "Failed to save face profile.")
       }
@@ -495,6 +496,7 @@ export default function FaceRegistration() {
               <p className="text-xs text-muted mt-1">
                 Your biometric identity is now active. You are fully set up for classroom attendance verification.
               </p>
+              <p className="text-xs text-teal mt-2 font-medium">Returning to dashboard shortly…</p>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-border text-left text-xs space-y-2">
@@ -522,7 +524,7 @@ export default function FaceRegistration() {
                 onClick={() => navigate("/student/dashboard")}
                 className="flex-1 py-3 rounded-xl bg-teal hover:bg-teal-dark text-white font-bold text-sm shadow-md transition"
               >
-                Go to Dashboard
+                Back to Dashboard
               </button>
 
               <button
