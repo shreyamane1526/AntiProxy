@@ -1,5 +1,7 @@
 -- PostgreSQL Database Schema for AntiProxy Attendance Engine
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS users (
   id VARCHAR(64) PRIMARY KEY,
   email VARCHAR(255) UNIQUE NOT NULL,
@@ -87,6 +89,18 @@ CREATE TABLE IF NOT EXISTS registered_devices (
   device_identifier VARCHAR(255) NOT NULL,
   status VARCHAR(32) DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
   registered_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS face_profiles (
+  id VARCHAR(64) PRIMARY KEY,
+  student_id VARCHAR(64) NOT NULL UNIQUE REFERENCES students(id) ON DELETE CASCADE,
+  embedding vector(128) NOT NULL,
+  model_name VARCHAR(128) NOT NULL,
+  model_version VARCHAR(64) NOT NULL,
+  liveness_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  status VARCHAR(32) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  registered_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS attendance_sessions (

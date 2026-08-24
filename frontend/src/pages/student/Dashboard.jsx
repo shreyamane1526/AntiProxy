@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import toast from "react-hot-toast"
-import { AlertTriangle, BookOpen, CalendarCheck2, Percent, Sparkles } from "lucide-react"
+import { AlertTriangle, BookOpen, CalendarCheck2, Fingerprint, LoaderCircle, Percent, Sparkles } from "lucide-react"
 import PageHeader from "../../components/PageHeader"
 import StatCard from "../../components/StatCard"
 import AttendanceProgress from "../../components/AttendanceProgress"
@@ -32,6 +32,11 @@ export default function StudentDashboard() {
 
   const [dbTimetable, setDbTimetable] = useState([])
   const [activeSessions, setActiveSessions] = useState([])
+  const [faceStatus, setFaceStatus] = useState({
+    registered: false,
+    registeredAt: null,
+    loading: true,
+  })
 
   useEffect(() => {
     async function loadDashboardData() {
@@ -74,6 +79,22 @@ export default function StudentDashboard() {
         }
       } catch (err) {
         console.warn("Active sessions fetch error:", err.message)
+      }
+
+      try {
+        const faceRes = await api.faceProfile.status(studentId)
+        if (faceRes) {
+          setFaceStatus({
+            registered: Boolean(faceRes.registered),
+            registeredAt: faceRes.registeredAt || null,
+            loading: false,
+          })
+        } else {
+          setFaceStatus((prev) => ({ ...prev, loading: false }))
+        }
+      } catch (err) {
+        console.warn("Face profile status fetch error:", err.message)
+        setFaceStatus((prev) => ({ ...prev, loading: false }))
       }
     }
     loadDashboardData()
@@ -148,6 +169,52 @@ export default function StudentDashboard() {
         <StatCard label="Classes attended" value={`${analytics.totalAttended} / ${analytics.totalClasses}`} hint="Present in recorded DB lectures" icon={CalendarCheck2} />
         <StatCard label="Subjects at risk" value={analytics.atRiskCount} hint="Below 75% attendance threshold" icon={AlertTriangle} />
         <StatCard label="Division" value={profile?.division || "CSE-B"} hint={profile?.programme || "B.Tech CSE"} icon={BookOpen} />
+        <StatCard
+          label="Face verification"
+          value={
+            faceStatus.loading
+              ? "…"
+              : faceStatus.registered
+                ? "Registered ✓"
+                : "Not Registered"
+          }
+          hint={
+            faceStatus.loading
+              ? "Checking face profile…"
+              : faceStatus.registered && faceStatus.registeredAt
+                ? `Registered ${new Date(faceStatus.registeredAt).toLocaleDateString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  })}`
+                : "Required before you can mark attendance"
+          }
+          subtext={!faceStatus.loading && !faceStatus.registered ? "Action required" : undefined}
+          positive={faceStatus.registered ? true : faceStatus.loading ? undefined : false}
+          icon={Fingerprint}
+        >
+          {faceStatus.loading ? (
+            <p className="inline-flex items-center gap-2 text-xs text-muted">
+              <LoaderCircle className="animate-spin" size={14} /> Loading status…
+            </p>
+          ) : faceStatus.registered ? (
+            <button
+              type="button"
+              onClick={() => navigate("/student/face-registration")}
+              className="text-xs font-semibold text-teal hover:text-teal-dark hover:underline"
+            >
+              Re-register face profile
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => navigate("/student/face-registration")}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-amber-600 transition"
+            >
+              <Fingerprint size={14} /> Register Face
+            </button>
+          )}
+        </StatCard>
       </section>
 
       <section className="mt-8">

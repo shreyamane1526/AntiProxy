@@ -33,7 +33,8 @@ const memoryDb = {
   verification_logs: [],
   attendance_rules: [],
   risk_scores: [],
-  notifications: []
+  notifications: [],
+  face_profiles: []
 };
 
 // Try connecting to PostgreSQL

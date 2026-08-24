@@ -85,4 +85,12 @@ export const api = {
   notifications: {
     list: () => apiFetch('/notifications'),
   },
+  faceProfile: {
+    register: (studentId, payload) =>
+      apiFetch(`/students/${studentId}/face-profile`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    status: (studentId) => apiFetch(`/students/${studentId}/face-profile`),
+  },
 };

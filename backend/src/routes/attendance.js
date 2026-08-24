@@ -653,8 +653,9 @@ router.post('/verify-ble', authenticateToken, async (req, res) => {
 
 // Step 11: POST /api/attendance/verify-liveness
 router.post('/verify-liveness', authenticateToken, async (req, res) => {
-  const { faceImageData } = req.body;
-  const result = FaceService.verifyFaceLiveness({ faceImageData });
+  const studentId = req.user.profileId || req.user.id;
+  const { liveEmbedding, livenessVerified } = req.body;
+  const result = await FaceService.verifyFaceLiveness({ studentId, liveEmbedding, livenessVerified });
   res.json(result);
 });
 
@@ -662,7 +663,16 @@ router.post('/verify-liveness', authenticateToken, async (req, res) => {
 router.post('/verify', authenticateToken, async (req, res) => {
   try {
     const studentId = req.user.profileId || req.user.id;
-    const { sessionId = 'sess-dbms-2026-08-23-10', qrToken, deviceIdentifier, bleRssi, bleSupported, faceImageData } = req.body;
+    const {
+      sessionId = 'sess-dbms-2026-08-23-10',
+      qrToken,
+      deviceIdentifier,
+      bleRssi,
+      bleSupported,
+      faceImageData,
+      liveEmbedding,
+      livenessVerified,
+    } = req.body;
 
     const result = await AttendanceVerificationEngine.verifyAndRecord({
       studentId,
@@ -672,6 +682,8 @@ router.post('/verify', authenticateToken, async (req, res) => {
       bleRssi,
       bleSupported,
       faceImageData,
+      liveEmbedding,
+      livenessVerified,
     });
 
     if (!result.success) {
@@ -687,7 +699,16 @@ router.post('/verify', authenticateToken, async (req, res) => {
 router.post('/mark', authenticateToken, async (req, res) => {
   // Alias for /verify
   const studentId = req.user.profileId || req.user.id;
-  const { sessionId = 'sess-dbms-2026-08-23-10', qrToken, deviceIdentifier, bleRssi, bleSupported, faceImageData } = req.body;
+  const {
+    sessionId = 'sess-dbms-2026-08-23-10',
+    qrToken,
+    deviceIdentifier,
+    bleRssi,
+    bleSupported,
+    faceImageData,
+    liveEmbedding,
+    livenessVerified,
+  } = req.body;
 
   const result = await AttendanceVerificationEngine.verifyAndRecord({
     studentId,
@@ -697,6 +718,8 @@ router.post('/mark', authenticateToken, async (req, res) => {
     bleRssi,
     bleSupported: bleSupported !== undefined ? bleSupported : true,
     faceImageData: faceImageData || 'data:image/jpeg;base64,mock',
+    liveEmbedding,
+    livenessVerified,
   });
 
   if (!result.success) {
